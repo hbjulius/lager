@@ -174,7 +174,12 @@
       <div class="hint" id="scanHint">QR-Code einer Box in den Rahmen halten</div>
     </div>
     <div class="stack" style="margin-top:14px">
-      <button class="btn full" id="startScan">Kamera starten</button>
+      <div class="row">
+        <button class="btn" id="startScan">Live-Scan starten</button>
+        <button class="btn ghost" onclick="document.getElementById('scanPhoto').click()">Foto scannen</button>
+      </div>
+      <input type="file" id="scanPhoto" accept="image/*" capture="environment" style="display:none">
+      <p class="small muted" id="scanStatus"></p>
       <div class="field"><label>Oder Code eintippen</label>
         <div class="row"><input id="manualCode" placeholder="z. B. B-0007" autocapitalize="characters"><button class="btn quiet" style="flex:0 0 auto" id="manualGo">Öffnen</button></div></div>
       <p class="small muted" id="scanNote"></p>
@@ -519,7 +524,20 @@ function renderPart(id){
   $('#v-part').innerHTML=`
     ${t.foto?`<img class="hero-photo" src="${t.foto}" alt="">`:'<div class="photo-empty">Kein Foto</div>'}
     <h1 style="margin-top:14px">${esc(t.name)}</h1>
-    <p class="muted">${esc(t.kategorie||'')}${t.menge?` · ${esc(t.menge)} Stück`:''}</p>
+    <p class="muted">${esc(t.kategorie||'')}</p>
+    <div class="card" style="margin-top:12px">
+      <div class="small muted" style="margin-bottom:6px">Bestand</div>
+      <div class="row">
+        <button class="btn quiet" style="font-size:20px" onclick="changeMenge('${t.id}',-1)">−1</button>
+        <div class="mono" style="text-align:center;font-size:30px;font-weight:700;flex:1.3" id="mengeVal">${esc(t.menge||0)}</div>
+        <button class="btn" style="font-size:20px" onclick="changeMenge('${t.id}',1)">+1</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn quiet" onclick="changeMenge('${t.id}',-parseInt(document.getElementById('mengeStep').value||0))">−</button>
+        <input id="mengeStep" inputmode="numeric" placeholder="Anzahl" style="flex:1.3;text-align:center;background:#fff;border:1px solid var(--line);border-radius:8px;padding:11px;font-size:18px;min-width:0">
+        <button class="btn quiet" onclick="changeMenge('${t.id}',parseInt(document.getElementById('mengeStep').value||0))">+</button>
+      </div>
+    </div>
     <div style="margin-top:8px">${(t.tags||[]).map(x=>`<span class="pill">${esc(x)}</span>`).join('')}</div>
     <div class="card" style="margin-top:14px">
       <div class="small muted" style="margin-bottom:4px">Lagerort</div>
@@ -535,6 +553,14 @@ function renderPart(id){
     </div>`;
   $('#aiBtn').onclick=()=>aiSuggest(t);
 }
+async function changeMenge(id,delta){
+  const t=teilById(id);if(!t||!delta)return;
+  const cur=parseInt(t.menge)||0;const neu=Math.max(0,cur+delta);
+  t.menge=String(neu);t.geaendert=now();
+  const el=document.getElementById('mengeVal');if(el)el.textContent=neu;
+  const st=document.getElementById('mengeStep');if(st)st.value='';
+  await persist();toast(`${delta>0?'+':''}${delta} → ${neu} Stück`);
+}
 async function aiSuggest(t){
   const out=$('#aiOut');out.textContent='Frage KI …';
   const inv=DB.teile.filter(x=>x.id!==t.id).slice(0,150).map(x=>`${x.name} [${x.kategorie||'-'}; ${(x.tags||[]).join(',')}] in ${boxById(x.boxId)?.code||'-'}`).join('\n');
@@ -548,9 +574,39 @@ async function aiSuggest(t){
 
 /* ============ Scanner ============ */
 let stream=null,scanRAF=null;
+function ensureJsQR(){
+  return new Promise(res=>{
+    if(typeof jsQR!=='undefined')return res(true);
+    const s=document.createElement('script');s.src='https://unpkg.com/jsqr@1.4.0/dist/jsQR.js';
+    s.onload=()=>res(typeof jsQR!=='undefined');s.onerror=()=>res(false);document.head.appendChild(s);
+  });
+}
+function decodeImageData(im){
+  if(typeof jsQR==='undefined')return null;
+  const q=jsQR(im.data,im.width,im.height,{inversionAttempts:'attemptBoth'});return q?q.data:null;
+}
+async function scanPhotoFile(file){
+  if(!file)return;const st=$('#scanStatus');st.textContent='Foto wird ausgewertet …';
+  if(!(await ensureJsQR())){st.textContent='QR-Bibliothek konnte nicht geladen werden (kein Internet?).';return;}
+  const img=new Image();const url=URL.createObjectURL(file);
+  img.onload=()=>{
+    let val=null;
+    for(const max of [800,1200,1600]){
+      const s=Math.min(1,max/Math.max(img.width,img.height));
+      const c=document.createElement('canvas');c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);
+      const ctx=c.getContext('2d');ctx.drawImage(img,0,0,c.width,c.height);
+      val=decodeImageData(ctx.getImageData(0,0,c.width,c.height));if(val)break;
+    }
+    URL.revokeObjectURL(url);
+    if(val){st.textContent='Erkannt: '+val;openCode(val);}else st.textContent='Kein QR-Code im Foto erkannt. Näher ran, gerade halten, gutes Licht.';
+  };
+  img.src=url;
+}
 function renderScan(){
   $('#scanNote').textContent=location.protocol==='file:'?'Hinweis: Über „Datei öffnen“ blockiert Safari die Kamera. Datei über einen Webserver/Homescreen öffnen oder Code eintippen.':'';
+  $('#scanStatus').textContent='';
   $('#startScan').onclick=startScan;
+  $('#scanPhoto').onchange=e=>{scanPhotoFile(e.target.files[0]);e.target.value='';};
   $('#manualGo').onclick=()=>openCode($('#manualCode').value);
   $('#manualCode').onkeydown=e=>{if(e.key==='Enter')openCode(e.target.value);};
 }
@@ -561,28 +617,42 @@ function openCode(raw){
 async function startScan(){
   const v=$('#video');
   try{
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+    const st=$('#scanStatus');
+    const hasJs=await ensureJsQR();
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false});
     v.srcObject=stream;await v.play();$('#startScan').textContent='Kamera stoppen';$('#startScan').onclick=stopScan;
     const c=$('#scanCanvas'),ctx=c.getContext('2d',{willReadFrequently:true});
-    const useNative=('BarcodeDetector' in window);
-    let det=null; if(useNative){try{det=new BarcodeDetector({formats:['qr_code']});}catch{det=null;}}
-    let busy=false;
-    const tick=async()=>{
+    let det=null;
+    if('BarcodeDetector' in window){try{const f=await BarcodeDetector.getSupportedFormats();if(f.includes('qr_code'))det=new BarcodeDetector({formats:['qr_code']});}catch{det=null;}}
+    let busy=false,frames=0,nativeMiss=0,lastRun=0;
+    const engine=()=>det?'Safari-Erkennung':(hasJs?'jsQR':'keine Engine – Foto-Scan nutzen');
+    st.textContent='Suche QR-Code … ('+engine()+')';
+    const tick=async(ts)=>{
       if(!stream)return;
-      if(v.readyState===4&&!busy){
-        busy=true;
+      if(v.readyState>=2&&!busy&&ts-lastRun>120){
+        busy=true;lastRun=ts;frames++;
         try{
           let val=null;
-          if(det){const codes=await det.detect(v);if(codes.length)val=codes[0].rawValue;}
-          else{c.width=v.videoWidth;c.height=v.videoHeight;ctx.drawImage(v,0,0);const im=ctx.getImageData(0,0,c.width,c.height);const q=jsQR(im.data,im.width,im.height,{inversionAttempts:'dontInvert'});if(q)val=q.data;}
-          if(val){stopScan();if(navigator.vibrate)navigator.vibrate(60);openCode(val);return;}
-        }catch(e){}
+          if(det){
+            try{const codes=await det.detect(v);if(codes.length)val=codes[0].rawValue;else nativeMiss++;}
+            catch{det=null;}
+            if(nativeMiss>25&&hasJs){det=null;st.textContent='Suche QR-Code … (jsQR)';}
+          }
+          if(!val&&!det&&hasJs){
+            const s=Math.min(1,640/Math.max(v.videoWidth,v.videoHeight));
+            c.width=Math.round(v.videoWidth*s);c.height=Math.round(v.videoHeight*s);
+            ctx.drawImage(v,0,0,c.width,c.height);
+            val=decodeImageData(ctx.getImageData(0,0,c.width,c.height));
+          }
+          if(val){stopScan();if(navigator.vibrate)navigator.vibrate(60);st.textContent='Erkannt: '+val;openCode(val);return;}
+          if(frames%10===0)st.textContent=`Suche QR-Code … (${engine()}, ${frames} Bilder geprüft)`;
+        }catch(e){st.textContent='Fehler: '+(e.message||e);}
         busy=false;
       }
       scanRAF=requestAnimationFrame(tick);
     };
-    tick();
-  }catch(e){toast('Kamera nicht verfügbar: '+(e.name||e));}
+    scanRAF=requestAnimationFrame(tick);
+  }catch(e){toast('Kamera nicht verfügbar: '+(e.name||e));$('#scanStatus').textContent='Kamera-Fehler: '+(e.name||e)+'. Nutze „Foto scannen“.';}
 }
 function stopScan(){
   if(scanRAF)cancelAnimationFrame(scanRAF);scanRAF=null;
