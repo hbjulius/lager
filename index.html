@@ -280,6 +280,7 @@ async function persist(){await store.save();}
 function migrate(){
   DB=Object.assign(EMPTY(),DB);
   DB.lager.forEach(l=>{if(l.kuerzel===undefined)l.kuerzel='';});
+  DB.regale.forEach(r=>{if(!r.typ)r.typ='regal';});
   DB.boxen.forEach(b=>{
     if(!b.regalId&&b.regal){
       const n=parseInt(b.regal);
@@ -312,7 +313,11 @@ const boxByCode=c=>DB.boxen.find(b=>b.code.toUpperCase()===String(c).trim().toUp
 const teilById=id=>DB.teile.find(t=>t.id===id);
 const fachLetter=i=>String.fromCharCode(64+i);          // 1 → A
 const fachIndex=l=>l?l.toUpperCase().charCodeAt(0)-64:0; // A → 1
-const regaleOf=lid=>DB.regale.filter(r=>r.lagerId===lid).sort((a,b)=>a.nummer-b.nummer);
+const isOrg=r=>r&&r.typ==='organiser';
+const regaleOf=lid=>DB.regale.filter(r=>r.lagerId===lid).sort((a,b)=>(isOrg(a)-isOrg(b))||(a.nummer-b.nummer));
+const regalLabel=r=>r?(isOrg(r)?'Organiser ':'Regal ')+r.nummer+(r.name?' '+r.name:''):'';
+const TYP_LABELS={regal:{fach:'Fach',reihe:'Reihe',zelle:'Fach'},organiser:{fach:'Zeile',reihe:'Spalte',zelle:'Schublade'}};
+const typLabels=r=>TYP_LABELS[isOrg(r)?'organiser':'regal'];
 
 /* Lagerort eines Objekts: Box → eigene Felder; Teil → Box oder eigene Felder */
 function locOf(o){
@@ -320,32 +325,35 @@ function locOf(o){
   if(o.boxId!==undefined&&o.boxId){const b=boxById(o.boxId);return b?locOf(b):null;}
   if(!o.lagerId&&!o.regalId)return null;
   const r=regalById(o.regalId);
-  return {lagerId:o.lagerId||r?.lagerId||'',regalId:o.regalId||'',fach:o.fach||'',reihe:o.reihe||''};
+  return {lagerId:o.lagerId||r?.lagerId||'',regalId:o.regalId||'',fach:o.fach||'',reihe:o.reihe||'',stapel:o.stapel||''};
 }
 function locText(o){
   const L=locOf(o);if(!L)return o&&o.boxId===''?'ohne Lagerort':'ohne Lagerort';
   const l=lagerById(L.lagerId),r=regalById(L.regalId);
   const p=[l?l.name:'?'];
-  if(r)p.push('Regal '+r.nummer);
-  if(L.fach)p.push('Fach '+L.fach);
-  if(L.reihe)p.push('Reihe '+L.reihe);
+  if(r)p.push((isOrg(r)?'Organiser ':'Regal ')+r.nummer);
+  if(isOrg(r)){if(L.fach||L.reihe)p.push('Schublade '+(L.fach||'?')+(L.reihe||'?'));}
+  else{if(L.fach)p.push('Fach '+L.fach);if(L.reihe)p.push('Reihe '+L.reihe);}
+  if(L.stapel)p.push((isOrg(r)?'Unterfach ':'Stapel ')+L.stapel);
   return p.join(' · ');
 }
 function locHtml(o){
   const L=locOf(o);if(!L)return '<span class="loc">ohne Lagerort</span>';
   const l=lagerById(L.lagerId),r=regalById(L.regalId);
   let s=`<span class="loc"><b>${esc(l?l.name:'?')}</b>`;
-  if(r)s+=` · Regal <b>${r.nummer}</b>`;
-  if(L.fach)s+=` · Fach <b>${esc(L.fach)}</b>`;
-  if(L.reihe)s+=` · Reihe <b>${esc(L.reihe)}</b>`;
+  if(r)s+=` · ${isOrg(r)?'Organiser':'Regal'} <b>${r.nummer}</b>`;
+  if(isOrg(r)){if(L.fach||L.reihe)s+=` · Schublade <b>${esc(L.fach)}${esc(L.reihe)}</b>`;}
+  else{if(L.fach)s+=` · Fach <b>${esc(L.fach)}</b>`;if(L.reihe)s+=` · Reihe <b>${esc(L.reihe)}</b>`;}
+  if(L.stapel)s+=` · ${isOrg(r)?'Unterfach':'Stapel'} <b>${esc(L.stapel)}</b>`;
   return s+'</span>';
 }
 /* Automatischer Box-Code: [Kürzel-]RegalFachReihe, bei Doppelung -2, -3 … */
 function autoCode(loc,excludeId){
   const l=lagerById(loc.lagerId),r=regalById(loc.regalId);
   let base=(l&&l.kuerzel?l.kuerzel.toUpperCase()+'-':'');
-  if(r&&loc.fach&&loc.reihe)base+=`${r.nummer}${loc.fach.toUpperCase()}${loc.reihe}`;
-  else if(r)base+=`${r.nummer}`+(loc.fach||'')+(loc.reihe||'');
+  const rp=r?(isOrg(r)?'O'+r.nummer:String(r.nummer)):'';
+  if(r&&loc.fach&&loc.reihe)base+=`${rp}${loc.fach.toUpperCase()}${loc.reihe}`+(parseInt(loc.stapel)>1?'-'+parseInt(loc.stapel):'');
+  else if(r)base+=rp+(loc.fach||'')+(loc.reihe||'');
   else{DB.seq.box=(DB.seq.box||0)+1;return base+'B'+String(DB.seq.box).padStart(3,'0');}
   const taken=c=>DB.boxen.some(b=>b.id!==excludeId&&b.code.toUpperCase()===c.toUpperCase());
   if(!taken(base))return base;
@@ -383,9 +391,15 @@ function shelfSvg(r,hl,opts={}){
     const x=m+(n-1)*cw,y=m+(f-1)*ch;const key=fachLetter(f)+n;
     const isHl=hl&&hl.fach===fachLetter(f)&&String(hl.reihe)===String(n);
     const cnt=opts.counts?opts.counts[key]||0:0;
+    if(isOrg(r)){
+      const g=Math.min(cw,ch)*0.08;
+      s+=`<rect x="${x+g}" y="${y+g}" width="${cw-2*g}" height="${ch-2*g}" rx="${g}" fill="${isHl?'#F5C400':(cnt?'#DCE7FB':'#F4F3EE')}" stroke="#6B6E68" stroke-width="0.7" ${opts.clickable?`class="cell" data-fach="${fachLetter(f)}" data-reihe="${n}" style="cursor:pointer"`:''}/>`;
+      s+=`<circle cx="${x+cw/2}" cy="${y+ch-g-ch*0.12}" r="${Math.min(cw,ch)*0.06}" fill="#6B6E68" pointer-events="none"/>`;
+    } else
     s+=`<rect x="${x}" y="${y}" width="${cw}" height="${ch}" fill="${isHl?'#F5C400':(cnt?'#DCE7FB':'transparent')}" stroke="#9A9890" stroke-width="0.6" ${opts.clickable?`class="cell" data-fach="${fachLetter(f)}" data-reihe="${n}" style="cursor:pointer"`:''}/>`;
     const fs=Math.min(cw,ch)*0.32;
-    if(opts.showKeys)s+=`<text x="${x+cw/2}" y="${y+ch/2}" font-size="${fs}" text-anchor="middle" dominant-baseline="central" fill="${isHl?'#1D1F1C':'#5B5E58'}" pointer-events="none">${key}${cnt?` (${cnt})`:''}</text>`;
+    if(cnt>1){const bw=cw*0.5,bh=Math.min(ch*0.12,4);for(let k=0;k<Math.min(cnt,5);k++)s+=`<rect x="${x+cw/2-bw/2}" y="${y+ch-3-(k+1)*(bh+1)}" width="${bw}" height="${bh}" fill="#0F5BE0" opacity=".55" pointer-events="none"/>`;}
+    if(opts.showKeys)s+=`<text x="${x+cw/2}" y="${y+ch*0.4}" font-size="${fs}" text-anchor="middle" dominant-baseline="central" fill="${isHl?'#1D1F1C':'#5B5E58'}" pointer-events="none">${key}${cnt?` (${cnt})`:''}</text>`;
     if(isHl&&!opts.showKeys)s+=`<text x="${x+cw/2}" y="${y+ch/2}" font-size="${fs}" font-weight="700" text-anchor="middle" dominant-baseline="central" fill="#1D1F1C">${key}</text>`;
   }
   const lf=Math.min(m*0.75,ch*0.5);
@@ -397,7 +411,7 @@ function shelfSvg(r,hl,opts={}){
 function shelfCard(o,label){
   const L=locOf(o);if(!L||!L.regalId)return '';
   const r=regalById(L.regalId);if(!r)return '';
-  return `<div class="card" style="margin-top:12px"><div class="small muted" style="margin-bottom:6px">${label||'Position im Regal '+r.nummer}${r.name?' – '+esc(r.name):''} <span class="muted">(${r.breite}×${r.hoehe} cm)</span></div>
+  return `<div class="card" style="margin-top:12px"><div class="small muted" style="margin-bottom:6px">${label||'Position in '+(isOrg(r)?'Organiser ':'Regal ')+r.nummer}${r.name?' – '+esc(r.name):''} <span class="muted">(${r.breite}×${r.hoehe} cm)</span></div>
     <div onclick="show('regal','${r.id}')">${shelfSvg(r,L,{maxH:220})}</div></div>`;
 }
 
@@ -406,27 +420,29 @@ function locSelectHtml(p,cur){
   cur=cur||{};
   return `<div class="field"><label>Lager</label><select id="${p}-lager">${DB.lager.map(l=>`<option value="${l.id}" ${l.id===cur.lagerId?'selected':''}>${esc(l.name)}</option>`).join('')}</select></div>
     <div class="row">
-      <div class="field"><label>Regal</label><select id="${p}-regal"></select></div>
-      <div class="field"><label>Fach</label><select id="${p}-fach"></select></div>
-      <div class="field"><label>Reihe</label><select id="${p}-reihe"></select></div>
-    </div>`;
+      <div class="field"><label>Regal / Organiser</label><select id="${p}-regal"></select></div>
+      <div class="field"><label id="${p}-lfach">Fach</label><select id="${p}-fach"></select></div>
+      <div class="field"><label id="${p}-lreihe">Reihe</label><select id="${p}-reihe"></select></div>
+      <div class="field"><label id="${p}-lstapel">Stapel</label><select id="${p}-stapel">${['','1','2','3','4','5','6','7','8'].map(v=>`<option value="${v}" ${String(v)===String(cur.stapel||'')?'selected':''}>${v||'–'}</option>`).join('')}</select></div>
+    </div>
+    <p class="small muted" style="margin-top:-4px" id="${p}-hstapel">Stapel: Position im Fach, wenn mehrere Boxen übereinander stehen (1 = unten).</p>`;
 }
 function locWire(p,cur,onChange){
   cur=cur||{};
   const L=$('#'+p+'-lager'),R=$('#'+p+'-regal'),F=$('#'+p+'-fach'),N=$('#'+p+'-reihe');
   const fill=(sel,opts,val)=>{sel.innerHTML=opts.map(o=>`<option value="${o.v}" ${String(o.v)===String(val)?'selected':''}>${o.t}</option>`).join('');};
-  const refreshRegal=()=>{const rs=regaleOf(L.value);fill(R,[{v:'',t:'– kein Regal –'},...rs.map(r=>({v:r.id,t:'Regal '+r.nummer+(r.name?' '+r.name:'')}))],R.value||cur.regalId);refreshFR();};
-  const refreshFR=()=>{const r=regalById(R.value);
+  const refreshRegal=()=>{const rs=regaleOf(L.value);fill(R,[{v:'',t:'– keins –'},...rs.map(r=>({v:r.id,t:regalLabel(r)}))],R.value||cur.regalId);refreshFR();};
+  const refreshFR=()=>{const r=regalById(R.value);const tl=typLabels(r);$('#'+p+'-lfach').textContent=tl.fach;$('#'+p+'-lreihe').textContent=tl.reihe;$('#'+p+'-lstapel').textContent=isOrg(r)?'Unterfach':'Stapel';$('#'+p+'-hstapel').textContent=isOrg(r)?'Unterfach: wenn die Schublade innen unterteilt ist (1 = links/vorn). Leer lassen, wenn egal.':'Stapel: Position im Fach, wenn mehrere Boxen übereinander stehen (1 = unten).';
     if(!r){fill(F,[{v:'',t:'–'}],'');fill(N,[{v:'',t:'–'}],'');}
     else{fill(F,[{v:'',t:'–'},...Array.from({length:r.faecher},(_,i)=>({v:fachLetter(i+1),t:fachLetter(i+1)}))],F.value||cur.fach);
          fill(N,[{v:'',t:'–'},...Array.from({length:r.reihen},(_,i)=>({v:i+1,t:i+1}))],N.value||cur.reihe);}
     onChange&&onChange();};
   L.onchange=()=>{R.value='';F.value='';N.value='';refreshRegal();};
   R.onchange=()=>{F.value='';N.value='';refreshFR();};
-  F.onchange=()=>onChange&&onChange();N.onchange=()=>onChange&&onChange();
+  F.onchange=()=>onChange&&onChange();N.onchange=()=>onChange&&onChange();$('#'+p+'-stapel').onchange=()=>onChange&&onChange();
   refreshRegal();
 }
-function locRead(p){return {lagerId:$('#'+p+'-lager').value,regalId:$('#'+p+'-regal').value,fach:$('#'+p+'-fach').value,reihe:$('#'+p+'-reihe').value};}
+function locRead(p){return {lagerId:$('#'+p+'-lager').value,regalId:$('#'+p+'-regal').value,fach:$('#'+p+'-fach').value,reihe:$('#'+p+'-reihe').value,stapel:$('#'+p+'-stapel').value};}
 
 /* ============ Kategorien ============ */
 function katSelectHtml(id,cur){
@@ -549,7 +565,7 @@ function renderBoxes(){
 }
 function boxForm(box,preset){
   if(!DB.lager.length){toast('Zuerst ein Lager anlegen');show('lager');return;}
-  const isNew=!box; box=box||Object.assign({id:uid(),code:'',name:'',kategorie:'',lagerId:DB.lager[0]?.id||'',regalId:'',fach:'',reihe:''},preset||{});
+  const isNew=!box; box=box||Object.assign({id:uid(),code:'',name:'',kategorie:'',lagerId:DB.lager[0]?.id||'',regalId:'',fach:'',reihe:'',stapel:''},preset||{});
   openSheet(`<h2 style="margin-bottom:12px">${isNew?'Neue Box':'Box bearbeiten'}</h2><div class="stack">
     ${locSelectHtml('bx',box)}
     <div class="field"><label>Code <span class="muted" id="codePrev"></span></label><input id="f-code" value="${esc(box.code)}" placeholder="automatisch" autocapitalize="characters"></div>
@@ -631,13 +647,13 @@ function renderLagerDetail(id){
   const loose=DB.boxen.filter(b=>b.lagerId===l.id&&!b.regalId);
   const looseParts=DB.teile.filter(t=>!t.boxId&&t.lagerId===l.id&&!t.regalId);
   $('#v-lagerdetail').innerHTML=`${l.ort||l.notiz?`<div class="card">${esc(l.ort)}${l.notiz?`<p class="small muted" style="margin-top:6px">${esc(l.notiz)}</p>`:''}</div>`:''}
-    <div class="row" style="margin:12px 0"><button class="btn full" onclick="regalForm(null,'${l.id}')">+ Regal</button><button class="btn quiet full" onclick="boxForm(null,{lagerId:'${l.id}'})">+ Box</button></div>
-    <div class="section"><h2>Regale <span class="small muted">${rs.length}</span></h2>
-    ${rs.length?`<div class="regal-grid">${rs.map(r=>{const counts=cellCounts(r);const total=Object.values(counts).reduce((a,b)=>a+b,0);
-      return `<button class="card regal-tile" onclick="show('regal','${r.id}')"><div class="title">Regal ${r.nummer}${r.name?' · '+esc(r.name):''}</div><div class="small muted">${r.breite}×${r.hoehe} cm · ${r.faecher} Fächer × ${r.reihen} Reihen · ${total} Objekte</div>${shelfSvg(r,null,{counts,maxH:150})}</button>`;}).join('')}</div>`
-      :'<div class="empty">Noch kein Regal. Regale haben Fächer (A, B, C …) und Reihen (1, 2, 3 …).</div>'}</div>
-    ${loose.length?`<div class="section"><h2>Boxen ohne Regal</h2><div class="list">${loose.map(boxItem).join('')}</div></div>`:''}
-    ${looseParts.length?`<div class="section"><h2>Teile ohne Regal</h2><div class="list">${looseParts.map(t=>partItem(t)).join('')}</div></div>`:''}`;
+    <div class="row" style="margin:12px 0"><button class="btn full" onclick="regalForm(null,'${l.id}','regal')">+ Regal</button><button class="btn full" onclick="regalForm(null,'${l.id}','organiser')">+ Organiser</button><button class="btn quiet full" onclick="boxForm(null,{lagerId:'${l.id}'})">+ Box</button></div>
+    ${[['Regale',rs.filter(r=>!isOrg(r)),'Noch kein Regal. Regale haben Fächer (A, B, C …) und Reihen (1, 2, 3 …).'],['Schiebe-Organiser',rs.filter(isOrg),'']].map(([titel,list,leer])=>list.length||leer?`<div class="section"><h2>${titel} <span class="small muted">${list.length}</span></h2>
+    ${list.length?`<div class="regal-grid">${list.map(r=>{const counts=cellCounts(r);const total=Object.values(counts).reduce((a,b)=>a+b,0);const tl=typLabels(r);
+      return `<button class="card regal-tile" onclick="show('regal','${r.id}')"><div class="title">${esc(regalLabel(r))}</div><div class="small muted">${r.breite}×${r.hoehe} cm · ${r.faecher} × ${r.reihen} ${tl.zelle==='Schublade'?'Schubladen':'Fächer/Reihen'} · ${total} Objekte</div>${shelfSvg(r,null,{counts,maxH:150})}</button>`;}).join('')}</div>`
+      :`<div class="empty">${leer}</div>`}</div>`:'').join('')}
+    ${loose.length?`<div class="section"><h2>Boxen ohne Regal/Organiser</h2><div class="list">${loose.map(boxItem).join('')}</div></div>`:''}
+    ${looseParts.length?`<div class="section"><h2>Teile ohne Regal/Organiser</h2><div class="list">${looseParts.map(t=>partItem(t)).join('')}</div></div>`:''}`;
 }
 
 /* ============ Regal ============ */
@@ -647,35 +663,40 @@ function cellCounts(r){
   DB.teile.filter(t=>!t.boxId&&t.regalId===r.id).forEach(t=>{if(t.fach&&t.reihe)c[t.fach+t.reihe]=(c[t.fach+t.reihe]||0)+1;});
   return c;
 }
-function regalForm(r,lagerId){
+function regalForm(r,lagerId,typ){
   const isNew=!r;
   const lid=lagerId||r?.lagerId||DB.lager[0]?.id;
-  const nextNr=Math.max(0,...regaleOf(lid).map(x=>x.nummer))+1;
-  r=r||{id:uid(),lagerId:lid,nummer:nextNr,name:'',breite:100,hoehe:200,tiefe:40,faecher:5,reihen:6,notiz:''};
-  openSheet(`<h2 style="margin-bottom:12px">${isNew?'Neues Regal':'Regal bearbeiten'}</h2><div class="stack">
+  typ=typ||r?.typ||'regal';
+  const nextNr=Math.max(0,...regaleOf(lid).filter(x=>(x.typ||'regal')===typ).map(x=>x.nummer))+1;
+  r=r||{id:uid(),typ:typ||'regal',lagerId:lid,nummer:nextNr,name:'',breite:typ==='organiser'?30:100,hoehe:typ==='organiser'?20:200,tiefe:typ==='organiser'?15:40,faecher:typ==='organiser'?4:5,reihen:6,notiz:''};
+  const org=isOrg(r);
+  openSheet(`<h2 style="margin-bottom:12px">${isNew?(org?'Neuer Organiser':'Neues Regal'):(org?'Organiser bearbeiten':'Regal bearbeiten')}</h2><div class="stack">
+    <div><span class="pill ${!org?'on':''}" id="typ-regal">Regal</span><span class="pill ${org?'on':''}" id="typ-org">Schiebe-Organiser</span></div>
     <div class="field"><label>Lager</label><select id="f-lager">${DB.lager.map(l=>`<option value="${l.id}" ${l.id===r.lagerId?'selected':''}>${esc(l.name)}</option>`).join('')}</select></div>
     <div class="row"><div class="field"><label>Nummer</label><input id="f-nummer" type="number" inputmode="numeric" value="${r.nummer}"></div>
       <div class="field" style="flex:2"><label>Bezeichnung</label><input id="f-name" value="${esc(r.name)}" placeholder="z. B. Fensterwand"></div></div>
     <div class="row"><div class="field"><label>Breite cm</label><input id="f-breite" type="number" inputmode="decimal" value="${r.breite}"></div>
       <div class="field"><label>Höhe cm</label><input id="f-hoehe" type="number" inputmode="decimal" value="${r.hoehe}"></div>
       <div class="field"><label>Tiefe cm</label><input id="f-tiefe" type="number" inputmode="decimal" value="${r.tiefe}"></div></div>
-    <div class="row"><div class="field"><label>Fächer (Ebenen, A–…)</label><input id="f-faecher" type="number" inputmode="numeric" min="1" max="26" value="${r.faecher}"></div>
-      <div class="field"><label>Reihen (Plätze pro Fach)</label><input id="f-reihen" type="number" inputmode="numeric" min="1" value="${r.reihen}"></div></div>
+    <div class="row"><div class="field"><label>${org?'Schubladen-Zeilen (A–…)':'Fächer (Ebenen, A–…)'}</label><input id="f-faecher" type="number" inputmode="numeric" min="1" max="26" value="${r.faecher}"></div>
+      <div class="field"><label>${org?'Schubladen pro Zeile':'Reihen (Plätze pro Fach)'}</label><input id="f-reihen" type="number" inputmode="numeric" min="1" value="${r.reihen}"></div></div>
     <div id="regalPrev" class="card" style="background:var(--paper-2)"></div>
     <div class="field"><label>Notiz</label><textarea id="f-notiz">${esc(r.notiz||'')}</textarea></div>
     <button class="btn full" id="f-save">${isNew?'Regal anlegen':'Speichern'}</button>
     ${isNew?'':`<button class="btn danger full" id="f-del">Regal löschen</button>`}</div>`);
-  const read=()=>({lagerId:$('#f-lager').value,nummer:parseInt($('#f-nummer').value)||1,name:$('#f-name').value.trim(),breite:parseFloat($('#f-breite').value)||100,hoehe:parseFloat($('#f-hoehe').value)||200,tiefe:parseFloat($('#f-tiefe').value)||0,faecher:Math.min(26,Math.max(1,parseInt($('#f-faecher').value)||1)),reihen:Math.max(1,parseInt($('#f-reihen').value)||1),notiz:$('#f-notiz').value.trim()});
+  $('#typ-regal').onclick=()=>{if(isNew){closeSheet();regalForm(null,$('#f-lager').value,'regal');}};
+  $('#typ-org').onclick=()=>{if(isNew){closeSheet();regalForm(null,$('#f-lager').value,'organiser');}};
+  const read=()=>({typ:r.typ||'regal',lagerId:$('#f-lager').value,nummer:parseInt($('#f-nummer').value)||1,name:$('#f-name').value.trim(),breite:parseFloat($('#f-breite').value)||100,hoehe:parseFloat($('#f-hoehe').value)||200,tiefe:parseFloat($('#f-tiefe').value)||0,faecher:Math.min(26,Math.max(1,parseInt($('#f-faecher').value)||1)),reihen:Math.max(1,parseInt($('#f-reihen').value)||1),notiz:$('#f-notiz').value.trim()});
   const prev=()=>{$('#regalPrev').innerHTML=shelfSvg(Object.assign({},r,read()),null,{showKeys:true,maxH:200});};
   ['f-breite','f-hoehe','f-faecher','f-reihen'].forEach(i=>$('#'+i).addEventListener('input',prev));prev();
   $('#f-save').onclick=async()=>{
     const v=read();
-    if(DB.regale.some(x=>x.id!==r.id&&x.lagerId===v.lagerId&&x.nummer===v.nummer)){toast('Regalnummer in diesem Lager schon vergeben');return;}
+    if(DB.regale.some(x=>x.id!==r.id&&x.lagerId===v.lagerId&&(x.typ||'regal')===v.typ&&x.nummer===v.nummer)){toast('Nummer in diesem Lager schon vergeben');return;}
     Object.assign(r,v,{geaendert:now()});if(isNew)DB.regale.push(r);
     await persist();closeSheet();show('regal',r.id,isNew);
   };
   if(!isNew)$('#f-del').onclick=async()=>{
-    if(DB.boxen.some(b=>b.regalId===r.id)||DB.teile.some(t=>t.regalId===r.id)){toast('Regal ist belegt – erst Boxen/Teile umlagern');return;}
+    if(DB.boxen.some(b=>b.regalId===r.id)||DB.teile.some(t=>t.regalId===r.id)){toast('Ist belegt – erst Boxen/Teile umlagern');return;}
     DB.regale=DB.regale.filter(x=>x.id!==r.id);await persist();closeSheet();show('lagerdetail',r.lagerId,false);
   };
 }
@@ -683,23 +704,27 @@ let regalSel=null;
 function renderRegal(id){
   const r=regalById(id);if(!r){show('lager');return;}
   const l=lagerById(r.lagerId);
-  $('#pageTitle').textContent='Regal '+r.nummer;headAction('Bearbeiten',()=>regalForm(r));
+  $('#pageTitle').textContent=(isOrg(r)?'Organiser ':'Regal ')+r.nummer;headAction('Bearbeiten',()=>regalForm(r));
+  const tl=typLabels(r);
   const counts=cellCounts(r);
   const draw=()=>{
     $('#regalSvg').innerHTML=shelfSvg(r,regalSel,{counts,showKeys:true,clickable:true,maxH:380});
     $('#regalSvg').querySelectorAll('.cell').forEach(c=>c.onclick=()=>{regalSel={fach:c.dataset.fach,reihe:c.dataset.reihe};draw();});
     const out=$('#cellContent');
     if(!regalSel){out.innerHTML='<p class="small muted">Fach antippen, um den Inhalt zu sehen.</p>';return;}
-    const bx=DB.boxen.filter(b=>b.regalId===r.id&&b.fach===regalSel.fach&&String(b.reihe)===String(regalSel.reihe));
-    const pt=DB.teile.filter(t=>!t.boxId&&t.regalId===r.id&&t.fach===regalSel.fach&&String(t.reihe)===String(regalSel.reihe));
-    out.innerHTML=`<h2>Fach ${regalSel.fach} · Reihe ${regalSel.reihe}</h2>
-      <div class="row" style="margin:8px 0"><button class="btn sm" onclick="boxForm(null,{lagerId:'${r.lagerId}',regalId:'${r.id}',fach:'${regalSel.fach}',reihe:'${regalSel.reihe}'})">+ Box hier</button>
-        <button class="btn quiet sm" onclick="partForm(null,{lagerId:'${r.lagerId}',regalId:'${r.id}',fach:'${regalSel.fach}',reihe:'${regalSel.reihe}'})">+ Teil hier</button></div>
-      ${bx.length||pt.length?`<div class="list">${bx.map(boxItem).join('')}${pt.map(t=>partItem(t)).join('')}</div>`:'<p class="small muted">Leer.</p>'}`;
+    const byStapel=isOrg(r)?((a,b)=>(parseInt(a.stapel)||0)-(parseInt(b.stapel)||0)):((a,b)=>(parseInt(b.stapel)||0)-(parseInt(a.stapel)||0));
+    const bx=DB.boxen.filter(b=>b.regalId===r.id&&b.fach===regalSel.fach&&String(b.reihe)===String(regalSel.reihe)).sort(byStapel);
+    const pt=DB.teile.filter(t=>!t.boxId&&t.regalId===r.id&&t.fach===regalSel.fach&&String(t.reihe)===String(regalSel.reihe)).sort(byStapel);
+    const nextStapel=Math.max(bx.length+pt.length,...bx.map(b=>parseInt(b.stapel)||0),...pt.map(t=>parseInt(t.stapel)||0))+1;
+    out.innerHTML=`<h2>${isOrg(r)?'Schublade '+regalSel.fach+regalSel.reihe:'Fach '+regalSel.fach+' · Reihe '+regalSel.reihe}</h2>
+      <div class="row" style="margin:8px 0">${isOrg(r)?`<button class="btn sm" onclick="partForm(null,{lagerId:'${r.lagerId}',regalId:'${r.id}',fach:'${regalSel.fach}',reihe:'${regalSel.reihe}',stapel:''})">+ Teil in diese Schublade</button>`:
+        `<button class="btn sm" onclick="boxForm(null,{lagerId:'${r.lagerId}',regalId:'${r.id}',fach:'${regalSel.fach}',reihe:'${regalSel.reihe}',stapel:'${nextStapel}'})">+ Box hier${bx.length||pt.length?' (oben drauf)':''}</button>
+        <button class="btn quiet sm" onclick="partForm(null,{lagerId:'${r.lagerId}',regalId:'${r.id}',fach:'${regalSel.fach}',reihe:'${regalSel.reihe}',stapel:'${nextStapel}'})">+ Teil hier</button>`}</div>
+      ${bx.length||pt.length?`<p class="small muted">${bx.length+pt.length} Objekte${isOrg(r)?'':', oben nach unten'}:</p><div class="list">${bx.map(boxItem).join('')}${pt.map(t=>partItem(t)).join('')}</div>`:'<p class="small muted">Leer.</p>'}`;
   };
-  $('#v-regal').innerHTML=`<div class="card"><div class="small muted">${esc(l?l.name:'')}${r.name?' · '+esc(r.name):''} · ${r.breite}×${r.hoehe}×${r.tiefe} cm</div>
+  $('#v-regal').innerHTML=`<div class="card"><div class="small muted">${esc(l?l.name:'')}${r.name?' · '+esc(r.name):''} · ${r.breite}×${r.hoehe}×${r.tiefe} cm${r.notiz?' · '+esc(r.notiz):''}</div>
     <div id="regalSvg" style="margin-top:8px"></div>
-    <p class="small muted" style="margin-top:6px">Fächer A–${fachLetter(r.faecher)} von oben nach unten, Reihen 1–${r.reihen} von links nach rechts. Blau = belegt.</p></div>
+    <p class="small muted" style="margin-top:6px">${isOrg(r)?`Schubladen A1–${fachLetter(r.faecher)}${r.reihen}, Zeilen von oben nach unten, Spalten von links nach rechts.`:`Fächer A–${fachLetter(r.faecher)} von oben nach unten, Reihen 1–${r.reihen} von links nach rechts.`} Blau = belegt.</p></div>
     <div class="section" id="cellContent"></div>`;
   if(regalSel&&(fachIndex(regalSel.fach)>r.faecher||parseInt(regalSel.reihe)>r.reihen))regalSel=null;
   draw();
@@ -716,7 +741,7 @@ function readImage(file){
 }
 function partForm(t,preset){
   const isNew=!t; preset=preset||{};
-  t=t||{id:uid(),name:'',kategorie:'',tags:[],menge:'',notiz:'',boxId:preset.boxId||'',lagerId:preset.lagerId||DB.lager[0]?.id||'',regalId:preset.regalId||'',fach:preset.fach||'',reihe:preset.reihe||'',foto:''};
+  t=t||{id:uid(),name:'',kategorie:'',tags:[],menge:'',notiz:'',boxId:preset.boxId||'',lagerId:preset.lagerId||DB.lager[0]?.id||'',regalId:preset.regalId||'',fach:preset.fach||'',reihe:preset.reihe||'',stapel:preset.stapel||'',foto:''};
   let foto=t.foto; let mode=t.boxId?'box':'regal';
   openSheet(`<h2 style="margin-bottom:12px">${isNew?'Neues Teil':'Teil bearbeiten'}</h2><div class="stack">
     <div id="f-fotoprev">${foto?`<img class="hero-photo" src="${foto}">`:'<div class="photo-empty">Kein Foto</div>'}</div>
@@ -745,7 +770,7 @@ function partForm(t,preset){
   $('#f-save').onclick=async()=>{
     const name=$('#f-name').value.trim();if(!name){toast('Name fehlt');return;}
     const kat=$('#f-kat').value==='__neu'?'':$('#f-kat').value;
-    let loc={boxId:'',lagerId:'',regalId:'',fach:'',reihe:''};
+    let loc={boxId:'',lagerId:'',regalId:'',fach:'',reihe:'',stapel:''};
     if(mode==='box')loc.boxId=$('#f-box').value; else if(DB.lager.length)Object.assign(loc,locRead('pt'));
     Object.assign(t,loc,{name,kategorie:kat,tags:$('#f-tags').value.split(',').map(s=>s.trim()).filter(Boolean),menge:$('#f-menge').value.trim(),notiz:$('#f-notiz').value.trim(),foto,geaendert:now()});
     if(isNew)DB.teile.push(t);
@@ -903,7 +928,7 @@ function stopScan(){
 
 
 /* ============ Etiketten ============ */
-function labelOrt(b){const l=lagerById(b.lagerId),r=regalById(b.regalId);return [l?l.name:'',r?'Regal '+r.nummer:'',b.fach?'Fach '+b.fach:'',b.reihe?'Reihe '+b.reihe:''].filter(Boolean).join(' · ');}
+function labelOrt(b){return locText(b).replace(/^ohne Lagerort$/,'');}
 function labelHtml(b,e,forPrint){
   const l=lagerById(b.lagerId);
   const ort=labelOrt(b);
@@ -1095,6 +1120,9 @@ $('#demoBtn').onclick=async()=>{
   if(!lagerById(L1.id))DB.lager.push(L1);if(!lagerById(L2.id))DB.lager.push(L2);
   const mkR=(id,lagerId,nummer,name,breite,hoehe,faecher,reihen)=>{let r=regalById(id);if(!r){r={id,lagerId,nummer,name,breite,hoehe,tiefe:40,faecher,reihen,notiz:'',geaendert:now()};DB.regale.push(r);}return r;};
   const R1=mkR('R-b1',L1.id,1,'Fensterwand',120,200,5,4),R2=mkR('R-b2',L1.id,2,'Tür',80,180,4,3),R3=mkR('R-v1',L2.id,1,'',100,200,5,5);
+  let O1=regalById('O-b1');if(!O1){O1={id:'O-b1',typ:'organiser',lagerId:L1.id,nummer:1,name:'Schrauben',breite:30,hoehe:20,tiefe:15,faecher:4,reihen:6,notiz:'',geaendert:now()};DB.regale.push(O1);}
+  [['M3x8 Zylinderkopf','A',1,'200'],['M3x12 Zylinderkopf','A',2,'150'],['M3 Muttern','A',3,'300'],['M4x10 Senkkopf','B',1,'80'],['Heat-Set Inserts M3','C',1,'120']].forEach(([name,f,n,menge])=>{if(!DB.teile.some(t=>t.name===name))DB.teile.push({id:uid(),name,kategorie:'Schrauben',tags:['m3'],menge,notiz:'',boxId:'',lagerId:L1.id,regalId:O1.id,fach:f,reihe:String(n),stapel:'',foto:'',geaendert:now()});});
+  if(!DB.kategorien.includes('Schrauben'))DB.kategorien.push('Schrauben');
   ['Mikrocontroller','Breakout-Board','Sensor','Display','Prototyp','Stecker/Kabel','Chemie/Flüssig'].forEach(k=>{if(!DB.kategorien.includes(k))DB.kategorien.push(k);});DB.kategorien.sort();
   const mk=(r,fach,reihe,name,kat)=>{const loc={lagerId:r.lagerId,regalId:r.id,fach,reihe:String(reihe)};let b=DB.boxen.find(x=>x.regalId===r.id&&x.fach===fach&&String(x.reihe)===String(reihe)&&x.name===name);
     if(!b){b=Object.assign({id:uid(),code:autoCode(loc),name,kategorie:kat,geaendert:now()},loc);DB.boxen.push(b);}return b;};
