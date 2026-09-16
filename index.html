@@ -131,6 +131,10 @@
     body{background:#fff}main{padding:0}
     .labels{grid-template-columns:repeat(3,1fr)}
   }
+  .regal-grid{display:grid;grid-template-columns:1fr;gap:10px}
+  .regal-tile{text-align:left;width:100%}
+  .regal-tile .title{font-weight:600;margin-bottom:2px}
+  .regal-tile svg{margin-top:8px}
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
@@ -194,6 +198,12 @@
         <p class="muted small" id="stats"></p>
       </div>
       <div class="card stack">
+        <h2>Kategorien</h2>
+        <p class="small muted">Eigene Kategorien für Teile und Boxen. Gelten überall in der Auswahl.</p>
+        <div class="row"><input id="katNew" placeholder="Neue Kategorie" style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:11px 12px;font-size:16px;min-width:0"><button class="btn quiet" style="flex:0 0 auto" id="katAdd">Hinzufügen</button></div>
+        <div class="list" id="katList"></div>
+      </div>
+      <div class="card stack">
         <h2>Etiketten</h2>
         <p class="small muted">Format, Größe und Inhalt der Box-Etiketten einstellen, als Bild für den Thermodrucker speichern oder direkt drucken.</p>
         <button class="btn ghost full" onclick="show('labels')">Etiketten-Editor öffnen</button>
@@ -222,6 +232,8 @@
   <section class="view" id="v-box"></section>
   <!-- DETAIL: Lager -->
   <section class="view" id="v-lagerdetail"></section>
+  <!-- DETAIL: Regal -->
+  <section class="view" id="v-regal"></section>
   <!-- Druckbogen -->
   <section class="view" id="v-labels"></section>
 </main>
@@ -240,7 +252,8 @@
 <script>
 /* ============ Daten & Speicher ============ */
 const KEY='lager-v1';
-let DB={lager:[],boxen:[],teile:[],seq:{box:0}};
+const EMPTY=()=>({lager:[],regale:[],boxen:[],teile:[],kategorien:[],etikett:{},seq:{box:0}});
+let DB=EMPTY();
 const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4);
 const now=()=>Date.now();
 
@@ -263,32 +276,81 @@ const store={
 };
 async function persist(){await store.save();}
 
+/* Migration alter Daten (v1/v2: Regal als Freitext an der Box) */
+function migrate(){
+  DB=Object.assign(EMPTY(),DB);
+  DB.lager.forEach(l=>{if(l.kuerzel===undefined)l.kuerzel='';});
+  DB.boxen.forEach(b=>{
+    if(!b.regalId&&b.regal){
+      const n=parseInt(b.regal);
+      if(!isNaN(n)){
+        let r=DB.regale.find(x=>x.lagerId===b.lagerId&&x.nummer===n);
+        if(!r){r={id:uid(),lagerId:b.lagerId,nummer:n,name:'',breite:100,hoehe:200,tiefe:40,faecher:5,reihen:6,geaendert:now()};DB.regale.push(r);}
+        b.regalId=r.id;
+        const f=String(b.fach||'').toUpperCase();
+        if(!/^[A-Z]$/.test(f)){const fi=parseInt(f);b.fach=(!isNaN(fi)&&fi>0)?String.fromCharCode(64+Math.min(fi,26)):'';}else b.fach=f;
+        b.reihe=String(parseInt(b.reihe)||'');
+        if(b.fach&&fachIndex(b.fach)>r.faecher)r.faecher=fachIndex(b.fach);
+        if(parseInt(b.reihe)>r.reihen)r.reihen=parseInt(b.reihe);
+      }
+      delete b.regal;
+    }
+    if(b.kategorie===undefined)b.kategorie='';
+  });
+  DB.teile.forEach(t=>{if(t.lagerId===undefined)t.lagerId='';if(t.regalId===undefined)t.regalId='';if(t.fach===undefined)t.fach='';if(t.reihe===undefined)t.reihe='';
+    if(t.kategorie&&!DB.kategorien.includes(t.kategorie))DB.kategorien.push(t.kategorie);});
+}
+
 /* ============ Hilfen ============ */
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('show'),2000);}
 const lagerById=id=>DB.lager.find(l=>l.id===id);
+const regalById=id=>DB.regale.find(r=>r.id===id);
 const boxById=id=>DB.boxen.find(b=>b.id===id);
 const boxByCode=c=>DB.boxen.find(b=>b.code.toUpperCase()===String(c).trim().toUpperCase());
 const teilById=id=>DB.teile.find(t=>t.id===id);
-function nextBoxCode(){DB.seq.box=(DB.seq.box||0)+1;return 'B-'+String(DB.seq.box).padStart(4,'0');}
-function locText(box){
-  if(!box) return 'ohne Box';
-  const l=lagerById(box.lagerId);
-  const parts=[l?l.name:'?'];
-  if(box.regal) parts.push('Regal '+box.regal);
-  if(box.reihe) parts.push('Reihe '+box.reihe);
-  if(box.fach) parts.push('Fach '+box.fach);
-  return parts.join(' · ');
+const fachLetter=i=>String.fromCharCode(64+i);          // 1 → A
+const fachIndex=l=>l?l.toUpperCase().charCodeAt(0)-64:0; // A → 1
+const regaleOf=lid=>DB.regale.filter(r=>r.lagerId===lid).sort((a,b)=>a.nummer-b.nummer);
+
+/* Lagerort eines Objekts: Box → eigene Felder; Teil → Box oder eigene Felder */
+function locOf(o){
+  if(!o)return null;
+  if(o.boxId!==undefined&&o.boxId){const b=boxById(o.boxId);return b?locOf(b):null;}
+  if(!o.lagerId&&!o.regalId)return null;
+  const r=regalById(o.regalId);
+  return {lagerId:o.lagerId||r?.lagerId||'',regalId:o.regalId||'',fach:o.fach||'',reihe:o.reihe||''};
 }
-function locHtml(box){
-  if(!box) return '<span class="loc">ohne Box</span>';
-  const l=lagerById(box.lagerId);
+function locText(o){
+  const L=locOf(o);if(!L)return o&&o.boxId===''?'ohne Lagerort':'ohne Lagerort';
+  const l=lagerById(L.lagerId),r=regalById(L.regalId);
+  const p=[l?l.name:'?'];
+  if(r)p.push('Regal '+r.nummer);
+  if(L.fach)p.push('Fach '+L.fach);
+  if(L.reihe)p.push('Reihe '+L.reihe);
+  return p.join(' · ');
+}
+function locHtml(o){
+  const L=locOf(o);if(!L)return '<span class="loc">ohne Lagerort</span>';
+  const l=lagerById(L.lagerId),r=regalById(L.regalId);
   let s=`<span class="loc"><b>${esc(l?l.name:'?')}</b>`;
-  if(box.regal) s+=` · Regal <b>${esc(box.regal)}</b>`;
-  if(box.reihe) s+=` · Reihe <b>${esc(box.reihe)}</b>`;
-  if(box.fach) s+=` · Fach <b>${esc(box.fach)}</b>`;
+  if(r)s+=` · Regal <b>${r.nummer}</b>`;
+  if(L.fach)s+=` · Fach <b>${esc(L.fach)}</b>`;
+  if(L.reihe)s+=` · Reihe <b>${esc(L.reihe)}</b>`;
   return s+'</span>';
+}
+/* Automatischer Box-Code: [Kürzel-]RegalFachReihe, bei Doppelung -2, -3 … */
+function autoCode(loc,excludeId){
+  const l=lagerById(loc.lagerId),r=regalById(loc.regalId);
+  let base=(l&&l.kuerzel?l.kuerzel.toUpperCase()+'-':'');
+  if(r&&loc.fach&&loc.reihe)base+=`${r.nummer}${loc.fach.toUpperCase()}${loc.reihe}`;
+  else if(r)base+=`${r.nummer}`+(loc.fach||'')+(loc.reihe||'');
+  else{DB.seq.box=(DB.seq.box||0)+1;return base+'B'+String(DB.seq.box).padStart(3,'0');}
+  const taken=c=>DB.boxen.some(b=>b.id!==excludeId&&b.code.toUpperCase()===c.toUpperCase());
+  if(!taken(base))return base;
+  for(let i=2;i<999;i++)if(!taken(base+'-'+i))return base+'-'+i;
+  return base+'-'+uid().slice(0,3);
 }
 const QR_PREFIX='LAGER:BOX:';
 const ETI_DEFAULT={form:'rund',breite:50,hoehe:50,rand:3,qr:26,layout:'oben',inhalt:'url',zeigeCode:true,zeigeName:true,zeigeOrt:true,schriftCode:4.2,schriftText:2.6,fett:true};
@@ -307,6 +369,76 @@ async function makeQR(el,text,px){
   if(!(await ensureQRCode())){el.innerHTML='<div class="small" style="color:var(--red);width:'+px+'px">QR-Bibliothek nicht geladen (Internet?)</div>';return null;}
   new QRCode(el,{text,width:px,height:px,correctLevel:QRCode.CorrectLevel.M});
   return el.querySelector('canvas')||el.querySelector('img');
+}
+
+/* ============ Regal-Zeichnung (Frontansicht) ============ */
+function shelfSvg(r,hl,opts={}){
+  const W=Math.max(30,r.breite||100),H=Math.max(30,r.hoehe||200);
+  const F=Math.max(1,r.faecher||1),N=Math.max(1,r.reihen||1);
+  const m=14; const vw=W+m*2,vh=H+m*2;
+  const cw=W/N,ch=H/F;
+  let s=`<svg viewBox="0 0 ${vw} ${vh}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:${opts.maxH||320}px;display:block" font-family="Helvetica,Arial,sans-serif">`;
+  s+=`<rect x="${m}" y="${m}" width="${W}" height="${H}" fill="#fff" stroke="#1D1F1C" stroke-width="1.5"/>`;
+  for(let f=1;f<=F;f++)for(let n=1;n<=N;n++){
+    const x=m+(n-1)*cw,y=m+(f-1)*ch;const key=fachLetter(f)+n;
+    const isHl=hl&&hl.fach===fachLetter(f)&&String(hl.reihe)===String(n);
+    const cnt=opts.counts?opts.counts[key]||0:0;
+    s+=`<rect x="${x}" y="${y}" width="${cw}" height="${ch}" fill="${isHl?'#F5C400':(cnt?'#DCE7FB':'transparent')}" stroke="#9A9890" stroke-width="0.6" ${opts.clickable?`class="cell" data-fach="${fachLetter(f)}" data-reihe="${n}" style="cursor:pointer"`:''}/>`;
+    const fs=Math.min(cw,ch)*0.32;
+    if(opts.showKeys)s+=`<text x="${x+cw/2}" y="${y+ch/2}" font-size="${fs}" text-anchor="middle" dominant-baseline="central" fill="${isHl?'#1D1F1C':'#5B5E58'}" pointer-events="none">${key}${cnt?` (${cnt})`:''}</text>`;
+    if(isHl&&!opts.showKeys)s+=`<text x="${x+cw/2}" y="${y+ch/2}" font-size="${fs}" font-weight="700" text-anchor="middle" dominant-baseline="central" fill="#1D1F1C">${key}</text>`;
+  }
+  const lf=Math.min(m*0.75,ch*0.5);
+  for(let f=1;f<=F;f++)s+=`<text x="${m-3}" y="${m+(f-0.5)*ch}" font-size="${lf}" text-anchor="end" dominant-baseline="central" fill="#5B5E58">${fachLetter(f)}</text>`;
+  for(let n=1;n<=N;n++)s+=`<text x="${m+(n-0.5)*cw}" y="${m+H+lf*1.1}" font-size="${lf}" text-anchor="middle" fill="#5B5E58">${n}</text>`;
+  if(opts.title)s+=`<text x="${m}" y="${m-4}" font-size="${lf}" fill="#1D1F1C">${esc(opts.title)}</text>`;
+  return s+'</svg>';
+}
+function shelfCard(o,label){
+  const L=locOf(o);if(!L||!L.regalId)return '';
+  const r=regalById(L.regalId);if(!r)return '';
+  return `<div class="card" style="margin-top:12px"><div class="small muted" style="margin-bottom:6px">${label||'Position im Regal '+r.nummer}${r.name?' – '+esc(r.name):''} <span class="muted">(${r.breite}×${r.hoehe} cm)</span></div>
+    <div onclick="show('regal','${r.id}')">${shelfSvg(r,L,{maxH:220})}</div></div>`;
+}
+
+/* ============ Lagerort-Auswahl (Formularbaustein) ============ */
+function locSelectHtml(p,cur){
+  cur=cur||{};
+  return `<div class="field"><label>Lager</label><select id="${p}-lager">${DB.lager.map(l=>`<option value="${l.id}" ${l.id===cur.lagerId?'selected':''}>${esc(l.name)}</option>`).join('')}</select></div>
+    <div class="row">
+      <div class="field"><label>Regal</label><select id="${p}-regal"></select></div>
+      <div class="field"><label>Fach</label><select id="${p}-fach"></select></div>
+      <div class="field"><label>Reihe</label><select id="${p}-reihe"></select></div>
+    </div>`;
+}
+function locWire(p,cur,onChange){
+  cur=cur||{};
+  const L=$('#'+p+'-lager'),R=$('#'+p+'-regal'),F=$('#'+p+'-fach'),N=$('#'+p+'-reihe');
+  const fill=(sel,opts,val)=>{sel.innerHTML=opts.map(o=>`<option value="${o.v}" ${String(o.v)===String(val)?'selected':''}>${o.t}</option>`).join('');};
+  const refreshRegal=()=>{const rs=regaleOf(L.value);fill(R,[{v:'',t:'– kein Regal –'},...rs.map(r=>({v:r.id,t:'Regal '+r.nummer+(r.name?' '+r.name:'')}))],R.value||cur.regalId);refreshFR();};
+  const refreshFR=()=>{const r=regalById(R.value);
+    if(!r){fill(F,[{v:'',t:'–'}],'');fill(N,[{v:'',t:'–'}],'');}
+    else{fill(F,[{v:'',t:'–'},...Array.from({length:r.faecher},(_,i)=>({v:fachLetter(i+1),t:fachLetter(i+1)}))],F.value||cur.fach);
+         fill(N,[{v:'',t:'–'},...Array.from({length:r.reihen},(_,i)=>({v:i+1,t:i+1}))],N.value||cur.reihe);}
+    onChange&&onChange();};
+  L.onchange=()=>{R.value='';F.value='';N.value='';refreshRegal();};
+  R.onchange=()=>{F.value='';N.value='';refreshFR();};
+  F.onchange=()=>onChange&&onChange();N.onchange=()=>onChange&&onChange();
+  refreshRegal();
+}
+function locRead(p){return {lagerId:$('#'+p+'-lager').value,regalId:$('#'+p+'-regal').value,fach:$('#'+p+'-fach').value,reihe:$('#'+p+'-reihe').value};}
+
+/* ============ Kategorien ============ */
+function katSelectHtml(id,cur){
+  return `<select id="${id}"><option value="">–</option>${DB.kategorien.map(k=>`<option ${k===cur?'selected':''}>${esc(k)}</option>`).join('')}<option value="__neu">＋ Neue Kategorie …</option></select>`;
+}
+function katWire(id){
+  const s=$('#'+id);s.onchange=async()=>{
+    if(s.value!=='__neu')return;
+    const n=(prompt('Neue Kategorie:')||'').trim();
+    if(n&&!DB.kategorien.includes(n)){DB.kategorien.push(n);DB.kategorien.sort((a,b)=>a.localeCompare(b));await persist();}
+    s.innerHTML=katSelectHtml(id,n).replace(/^<select[^>]*>|<\/select>$/g,'');s.value=n||'';
+  };
 }
 
 /* ============ Ähnlichkeit ============ */
@@ -328,17 +460,17 @@ function similarTo(t,n=6){
   return DB.teile.filter(x=>x.id!==t.id).map(x=>({t:x,s:sim(t,x)})).filter(x=>x.s>0.12).sort((a,b)=>b.s-a.s).slice(0,n);
 }
 function fuzzyQuery(q,n=8){
-  const pseudo={name:q};const Q=tokens(pseudo);
+  const Q=tokens({name:q});
   return DB.teile.map(t=>{const T=tokens(t);let i=0;Q.forEach(x=>{if(T.has(x))i++;});return {t,s:i/(Q.size||1)};})
     .filter(x=>x.s>0.2).sort((a,b)=>b.s-a.s).slice(0,n);
 }
 
 /* ============ Navigation ============ */
-let current='search', history=[];
-const titles={search:'Suche',boxes:'Boxen',lager:'Lager',scan:'Scannen',more:'Mehr',part:'Teil',box:'Box',lagerdetail:'Lager',labels:'Etiketten'};
+let current='search', history=[], currentArg=null;
+const titles={search:'Suche',boxes:'Boxen',lager:'Lager',scan:'Scannen',more:'Mehr',part:'Teil',box:'Box',lagerdetail:'Lager',regal:'Regal',labels:'Etiketten'};
 function show(view,arg,push=true){
   if(current==='scan') stopScan();
-  if(push&&['part','box','lagerdetail','labels'].includes(view)) history.push({view:current,arg:currentArg});
+  if(push&&['part','box','lagerdetail','regal','labels'].includes(view)) history.push({view:current,arg:currentArg});
   if(['search','boxes','lager','scan','more'].includes(view)) history=[];
   current=view; currentArg=arg;
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
@@ -348,153 +480,232 @@ function show(view,arg,push=true){
   $('#pageTitle').textContent=titles[view]||'';
   const ha=$('#headAction');ha.style.display='none';ha.onclick=null;
   window.scrollTo(0,0);
-  ({search:renderSearch,boxes:renderBoxes,lager:renderLager,scan:renderScan,more:renderMore,part:renderPart,box:renderBox,lagerdetail:renderLagerDetail,labels:renderLabels})[view](arg);
+  ({search:renderSearch,boxes:renderBoxes,lager:renderLager,scan:renderScan,more:renderMore,part:renderPart,box:renderBox,lagerdetail:renderLagerDetail,regal:renderRegal,labels:renderLabels})[view](arg);
 }
-let currentArg=null;
 $('#backBtn').onclick=()=>{const h=history.pop();if(h)show(h.view,h.arg,false);else show('search');};
 document.querySelectorAll('nav.tabs button').forEach(b=>b.onclick=()=>show(b.dataset.tab));
 function headAction(label,fn){const ha=$('#headAction');ha.textContent=label;ha.style.display='';ha.onclick=fn;}
 
-/* ============ Sheet (Formulare) ============ */
+/* ============ Sheet ============ */
 function openSheet(html){$('#sheetBody').innerHTML='<div class="grab"></div>'+html;$('#sheet').classList.add('open');}
 function closeSheet(){$('#sheet').classList.remove('open');}
 $('#sheet').addEventListener('click',e=>{if(e.target.id==='sheet')closeSheet();});
 
-/* ============ Render: Suche ============ */
-let activeLagerFilter='';
+/* ============ Suche ============ */
+let activeLagerFilter='',activeKatFilter='';
 function partItem(t,extra=''){
   const box=boxById(t.boxId);
   return `<button class="item" onclick="show('part','${t.id}')">
     <div class="thumb">${t.foto?`<img src="${t.foto}" alt="">`:'▢'}</div>
     <div class="body"><div class="title">${esc(t.name)}${t.menge?` <span class="muted small">× ${esc(t.menge)}</span>`:''}</div>
-      <div class="sub">${box?`<span class="tag">${esc(box.code)}</span> `:''}${esc(locText(box))}</div>${extra}</div>
+      <div class="sub">${box?`<span class="tag">${esc(box.code)}</span> `:''}${esc(locText(t))}</div>${extra}</div>
     <div class="chev">›</div></button>`;
 }
 function renderSearch(){
   const f=$('#filters');
   f.innerHTML=`<span class="pill ${activeLagerFilter===''?'on':''}" onclick="activeLagerFilter='';renderSearch()">Alle Lager</span>`+
-    DB.lager.map(l=>`<span class="pill ${activeLagerFilter===l.id?'on':''}" onclick="activeLagerFilter='${l.id}';renderSearch()">${esc(l.name)}</span>`).join('');
+    DB.lager.map(l=>`<span class="pill ${activeLagerFilter===l.id?'on':''}" onclick="activeLagerFilter='${l.id}';renderSearch()">${esc(l.name)}</span>`).join('')+
+    (DB.kategorien.length?`<br><span class="pill ${activeKatFilter===''?'on':''}" onclick="activeKatFilter='';renderSearch()">Alle Kategorien</span>`+
+    DB.kategorien.map(k=>`<span class="pill ${activeKatFilter===k?'on':''}" onclick="activeKatFilter='${esc(k).replace(/'/g,"\\'")}';renderSearch()">${esc(k)}</span>`).join(''):'');
   const q=$('#q').value.trim();
-  const inLager=t=>{if(!activeLagerFilter)return true;const b=boxById(t.boxId);return b&&b.lagerId===activeLagerFilter;};
+  const inFilter=t=>{if(activeKatFilter&&t.kategorie!==activeKatFilter)return false;if(!activeLagerFilter)return true;const L=locOf(t);return L&&L.lagerId===activeLagerFilter;};
   let list;
-  if(!q){ list=DB.teile.filter(inLager).sort((a,b)=>(b.geaendert||0)-(a.geaendert||0)).slice(0,30); }
+  if(!q){ list=DB.teile.filter(inFilter).sort((a,b)=>(b.geaendert||0)-(a.geaendert||0)).slice(0,30); }
   else{
     const nq=norm(q);
     const bx=boxByCode(q); if(bx){ $('#searchResults').innerHTML=`<div class="card"><div>Box gefunden</div>${boxItem(bx)}</div>`; $('#similarResults').innerHTML='';return; }
-    list=DB.teile.filter(inLager).filter(t=>norm([t.name,t.kategorie,(t.tags||[]).join(' '),t.notiz,boxById(t.boxId)?.code].join(' ')).includes(nq));
+    list=DB.teile.filter(inFilter).filter(t=>norm([t.name,t.kategorie,(t.tags||[]).join(' '),t.notiz,boxById(t.boxId)?.code,locText(t)].join(' ')).includes(nq));
   }
   const r=$('#searchResults');
-  if(!DB.teile.length){r.innerHTML=`<div class="empty"><b>Noch keine Teile</b>Leg zuerst ein Lager und eine Box an, dann Teile mit Foto.<br><br><button class="btn ghost" onclick="show('lager')">Zum Lager</button></div>`;$('#similarResults').innerHTML='';return;}
+  if(!DB.teile.length){r.innerHTML=`<div class="empty"><b>Noch keine Teile</b>Leg zuerst ein Lager mit Regal an, dann Boxen oder Teile.<br><br><button class="btn ghost" onclick="show('lager')">Zum Lager</button></div>`;$('#similarResults').innerHTML='';return;}
   r.innerHTML=list.length?`<p class="small muted" style="margin:6px 0">${q?list.length+' Treffer':'Zuletzt bearbeitet'}</p><div class="list">${list.map(t=>partItem(t)).join('')}</div>`
     :`<div class="empty"><b>Kein direkter Treffer für „${esc(q)}“</b>Unten stehen ähnliche Teile aus dem Bestand.</div>`;
   const sr=$('#similarResults');
   if(q){
     const ids=new Set(list.map(t=>t.id));
-    const fz=fuzzyQuery(q).filter(x=>!ids.has(x.t.id)&&inLager(x.t));
+    const fz=fuzzyQuery(q).filter(x=>!ids.has(x.t.id)&&inFilter(x.t));
     sr.innerHTML=fz.length?`<div class="section"><h2>Ähnliche Teile</h2><div class="list sim">${fz.map(x=>partItem(x.t,`<div class="score">Ähnlichkeit ${Math.round(x.s*100)} %</div>`)).join('')}</div></div>`:'';
   } else sr.innerHTML='';
 }
 $('#q').addEventListener('input',renderSearch);
 
-/* ============ Render: Boxen ============ */
+/* ============ Boxen ============ */
 function boxItem(b){
   const n=DB.teile.filter(t=>t.boxId===b.id).length;
   return `<button class="item" onclick="show('box','${b.id}')">
     <div class="thumb" style="background:var(--tape);font-weight:700;font-size:13px">${esc(b.code)}</div>
-    <div class="body"><div class="title">${esc(b.name||'Box '+b.code)}</div><div class="sub">${esc(locText(b))} · ${n} Teile</div></div><div class="chev">›</div></button>`;
+    <div class="body"><div class="title">${esc(b.name||'Box '+b.code)}${b.kategorie?` <span class="muted small">· ${esc(b.kategorie)}</span>`:''}</div><div class="sub">${esc(locText(b))} · ${n} Teile</div></div><div class="chev">›</div></button>`;
 }
 function renderBoxes(){
   headAction('+ Box',()=>boxForm());
   const el=$('#boxList');
-  if(!DB.boxen.length){el.innerHTML=`<div class="empty"><b>Noch keine Boxen</b>Jede Box bekommt automatisch einen Code und QR-Code.<br><br><button class="btn" onclick="boxForm()">Erste Box anlegen</button></div>`;return;}
+  if(!DB.boxen.length){el.innerHTML=`<div class="empty"><b>Noch keine Boxen</b>Der Code entsteht automatisch aus Regal, Fach und Reihe.<br><br><button class="btn" onclick="boxForm()">Erste Box anlegen</button></div>`;return;}
   const groups={};DB.boxen.forEach(b=>{(groups[b.lagerId]??=[]).push(b);});
   el.innerHTML=Object.keys(groups).map(lid=>{
     const l=lagerById(lid);
     return `<div class="section"><h2>${esc(l?l.name:'Ohne Lager')}<span class="small muted">${groups[lid].length}</span></h2><div class="list">${
-      groups[lid].sort((a,b)=>a.code.localeCompare(b.code)).map(boxItem).join('')}</div></div>`;
+      groups[lid].sort((a,b)=>a.code.localeCompare(b.code,undefined,{numeric:true})).map(boxItem).join('')}</div></div>`;
   }).join('');
 }
-function boxForm(box){
-  const isNew=!box; box=box||{id:uid(),code:'',name:'',lagerId:DB.lager[0]?.id||'',regal:'',reihe:'',fach:''};
+function boxForm(box,preset){
   if(!DB.lager.length){toast('Zuerst ein Lager anlegen');show('lager');return;}
+  const isNew=!box; box=box||Object.assign({id:uid(),code:'',name:'',kategorie:'',lagerId:DB.lager[0]?.id||'',regalId:'',fach:'',reihe:''},preset||{});
   openSheet(`<h2 style="margin-bottom:12px">${isNew?'Neue Box':'Box bearbeiten'}</h2><div class="stack">
-    <div class="field"><label>Code (leer = automatisch)</label><input id="f-code" value="${esc(box.code)}" placeholder="B-0001" autocapitalize="characters"></div>
+    ${locSelectHtml('bx',box)}
+    <div class="field"><label>Code <span class="muted" id="codePrev"></span></label><input id="f-code" value="${esc(box.code)}" placeholder="automatisch" autocapitalize="characters"></div>
     <div class="field"><label>Bezeichnung</label><input id="f-name" value="${esc(box.name)}" placeholder="z. B. ESP32-Boards"></div>
-    <div class="field"><label>Lager</label><select id="f-lager">${DB.lager.map(l=>`<option value="${l.id}" ${l.id===box.lagerId?'selected':''}>${esc(l.name)}</option>`).join('')}</select></div>
-    <div class="row">
-      <div class="field"><label>Regal</label><input id="f-regal" value="${esc(box.regal)}" placeholder="A"></div>
-      <div class="field"><label>Reihe</label><input id="f-reihe" value="${esc(box.reihe)}" placeholder="3"></div>
-      <div class="field"><label>Fach</label><input id="f-fach" value="${esc(box.fach)}" placeholder="2"></div>
-    </div>
+    <div class="field"><label>Kategorie</label>${katSelectHtml('f-kat',box.kategorie)}</div>
     <button class="btn full" id="f-save">${isNew?'Box anlegen':'Speichern'}</button>
     ${isNew?'':`<button class="btn danger full" id="f-del">Box löschen</button>`}
   </div>`);
+  katWire('f-kat');
+  let manual=false;$('#f-code').addEventListener('input',()=>{manual=$('#f-code').value.trim()!=='';});
+  let first=true;
+  const prev=()=>{const c=autoCodePreview(locRead('bx'),box.id);$('#codePrev').textContent='(automatisch: '+c+')';
+    if(!first&&!manual)$('#f-code').value=c; first=false;};
+  locWire('bx',box,prev);
   $('#f-save').onclick=async()=>{
+    const loc=locRead('bx');
     let code=$('#f-code').value.trim().toUpperCase();
-    if(!code) code=nextBoxCode();
-    const dup=DB.boxen.find(b=>b.code===code&&b.id!==box.id); if(dup){toast('Code schon vergeben');return;}
-    Object.assign(box,{code,name:$('#f-name').value.trim(),lagerId:$('#f-lager').value,regal:$('#f-regal').value.trim(),reihe:$('#f-reihe').value.trim(),fach:$('#f-fach').value.trim(),geaendert:now()});
+    if(!code)code=autoCode(loc,box.id);
+    const dup=DB.boxen.find(b=>b.code.toUpperCase()===code&&b.id!==box.id); if(dup){toast('Code schon vergeben');return;}
+    Object.assign(box,loc,{code,name:$('#f-name').value.trim(),kategorie:$('#f-kat').value==='__neu'?'':$('#f-kat').value,geaendert:now()});
     if(isNew) DB.boxen.push(box);
     await persist();closeSheet();toast(isNew?'Box '+code+' angelegt':'Gespeichert');show('box',box.id,false);
   };
   if(!isNew) $('#f-del').onclick=async()=>{
     const n=DB.teile.filter(t=>t.boxId===box.id).length;
-    if(!confirm(`Box ${box.code} löschen? ${n} Teile bleiben erhalten, aber ohne Box.`))return;
+    if(!confirm(`Box ${box.code} löschen? ${n} Teile bleiben erhalten, aber ohne Lagerort.`))return;
     DB.teile.forEach(t=>{if(t.boxId===box.id)t.boxId='';});
     DB.boxen=DB.boxen.filter(b=>b.id!==box.id);await persist();closeSheet();show('boxes');
   };
 }
+function autoCodePreview(loc,excludeId){const s=DB.seq.box;const c=autoCode(loc,excludeId);DB.seq.box=s;return c;}
 function renderBox(id){
   const b=boxById(id); if(!b){show('boxes');return;}
   $('#pageTitle').textContent=b.code; headAction('Bearbeiten',()=>boxForm(b));
   const parts=DB.teile.filter(t=>t.boxId===b.id).sort((x,y)=>x.name.localeCompare(y.name));
   $('#v-box').innerHTML=`
     <div class="card qr-wrap"><div class="qr" id="qrBox"></div><div class="code">${esc(b.code)}</div>
-      <div>${esc(b.name||'')}</div>${locHtml(b)}</div>
-    <div class="row" style="margin-top:12px"><button class="btn full" onclick="partForm(null,'${b.id}')">+ Teil in diese Box</button></div>
+      <div>${esc(b.name||'')}${b.kategorie?` <span class="muted">· ${esc(b.kategorie)}</span>`:''}</div>${locHtml(b)}</div>
+    ${shelfCard(b)}
+    <div class="row" style="margin-top:12px"><button class="btn full" onclick="partForm(null,{boxId:'${b.id}'})">+ Teil in diese Box</button></div>
     <div class="row" style="margin-top:8px"><button class="btn quiet" onclick="labelImage('${b.id}')">Etikett als Bild</button><button class="btn quiet" onclick="printLabels(['${b.id}'])">Etikett drucken</button></div>
     <div class="section"><h2>Inhalt <span class="small muted">${parts.length}</span></h2>
       ${parts.length?`<div class="list">${parts.map(t=>partItem(t)).join('')}</div>`:`<div class="empty">Diese Box ist leer.</div>`}</div>`;
   makeQR($('#qrBox'),qrText(b),180);
 }
 
-/* ============ Render: Lager ============ */
+/* ============ Lager ============ */
 function renderLager(){
   headAction('+ Lager',()=>lagerForm());
   const el=$('#lagerList');
-  if(!DB.lager.length){el.innerHTML=`<div class="empty"><b>Noch kein Lager</b>Ein Lager ist ein Gebäude oder Raum, z. B. „Büro Mosbach“.<br><br><button class="btn" onclick="lagerForm()">Erstes Lager anlegen</button></div>`;return;}
+  if(!DB.lager.length){el.innerHTML=`<div class="empty"><b>Noch kein Lager</b>Ein Lager ist ein Gebäude oder Raum, z. B. „Büro“. Darin legst du Regale an.<br><br><button class="btn" onclick="lagerForm()">Erstes Lager anlegen</button></div>`;return;}
   el.innerHTML=`<div class="list">${DB.lager.map(l=>{
-    const bx=DB.boxen.filter(b=>b.lagerId===l.id);const n=DB.teile.filter(t=>bx.some(b=>b.id===t.boxId)).length;
-    return `<button class="item" onclick="show('lagerdetail','${l.id}')"><div class="thumb">⌂</div><div class="body"><div class="title">${esc(l.name)}</div><div class="sub">${esc(l.ort||'')}${l.ort?' · ':''}${bx.length} Boxen · ${n} Teile</div></div><div class="chev">›</div></button>`;}).join('')}</div>`;
+    const bx=DB.boxen.filter(b=>b.lagerId===l.id);const n=DB.teile.filter(t=>locOf(t)?.lagerId===l.id).length;
+    return `<button class="item" onclick="show('lagerdetail','${l.id}')"><div class="thumb">${esc(l.kuerzel||'⌂')}</div><div class="body"><div class="title">${esc(l.name)}</div><div class="sub">${esc(l.ort||'')}${l.ort?' · ':''}${regaleOf(l.id).length} Regale · ${bx.length} Boxen · ${n} Teile</div></div><div class="chev">›</div></button>`;}).join('')}</div>`;
 }
 function lagerForm(l){
-  const isNew=!l; l=l||{id:uid(),name:'',ort:'',notiz:''};
+  const isNew=!l; l=l||{id:uid(),name:'',kuerzel:'',ort:'',notiz:''};
   openSheet(`<h2 style="margin-bottom:12px">${isNew?'Neues Lager':'Lager bearbeiten'}</h2><div class="stack">
-    <div class="field"><label>Name</label><input id="f-name" value="${esc(l.name)}" placeholder="Büro Mosbach"></div>
+    <div class="row"><div class="field" style="flex:2"><label>Name</label><input id="f-name" value="${esc(l.name)}" placeholder="Büro"></div>
+    <div class="field"><label>Kürzel (für Codes)</label><input id="f-kuerzel" value="${esc(l.kuerzel)}" placeholder="B" maxlength="4" autocapitalize="characters"></div></div>
     <div class="field"><label>Ort / Adresse</label><input id="f-ort" value="${esc(l.ort)}" placeholder="optional"></div>
     <div class="field"><label>Notiz</label><textarea id="f-notiz">${esc(l.notiz)}</textarea></div>
     <button class="btn full" id="f-save">${isNew?'Lager anlegen':'Speichern'}</button>
     ${isNew?'':`<button class="btn danger full" id="f-del">Lager löschen</button>`}</div>`);
   $('#f-save').onclick=async()=>{
     const name=$('#f-name').value.trim(); if(!name){toast('Name fehlt');return;}
-    Object.assign(l,{name,ort:$('#f-ort').value.trim(),notiz:$('#f-notiz').value.trim(),geaendert:now()});
+    Object.assign(l,{name,kuerzel:$('#f-kuerzel').value.trim().toUpperCase(),ort:$('#f-ort').value.trim(),notiz:$('#f-notiz').value.trim(),geaendert:now()});
     if(isNew)DB.lager.push(l);await persist();closeSheet();show('lager');
   };
   if(!isNew)$('#f-del').onclick=async()=>{
-    if(DB.boxen.some(b=>b.lagerId===l.id)){toast('Erst die Boxen verschieben oder löschen');return;}
+    if(DB.boxen.some(b=>b.lagerId===l.id)||DB.regale.some(r=>r.lagerId===l.id)){toast('Erst Regale und Boxen entfernen');return;}
     DB.lager=DB.lager.filter(x=>x.id!==l.id);await persist();closeSheet();show('lager');
   };
 }
 function renderLagerDetail(id){
   const l=lagerById(id);if(!l){show('lager');return;}
   $('#pageTitle').textContent=l.name;headAction('Bearbeiten',()=>lagerForm(l));
-  const bx=DB.boxen.filter(b=>b.lagerId===l.id);
-  const regale={};bx.forEach(b=>{(regale[b.regal||'—']??=[]).push(b);});
+  const rs=regaleOf(l.id);
+  const loose=DB.boxen.filter(b=>b.lagerId===l.id&&!b.regalId);
+  const looseParts=DB.teile.filter(t=>!t.boxId&&t.lagerId===l.id&&!t.regalId);
   $('#v-lagerdetail').innerHTML=`${l.ort||l.notiz?`<div class="card">${esc(l.ort)}${l.notiz?`<p class="small muted" style="margin-top:6px">${esc(l.notiz)}</p>`:''}</div>`:''}
-    ${Object.keys(regale).sort().map(r=>`<div class="section"><h2>${r==='—'?'Ohne Regal':'Regal '+esc(r)}<span class="small muted">${regale[r].length} Boxen</span></h2><div class="list">${regale[r].sort((a,b)=>(a.reihe+a.fach).localeCompare(b.reihe+b.fach)).map(boxItem).join('')}</div></div>`).join('')||'<div class="empty">Noch keine Boxen in diesem Lager.</div>'}`;
+    <div class="row" style="margin:12px 0"><button class="btn full" onclick="regalForm(null,'${l.id}')">+ Regal</button><button class="btn quiet full" onclick="boxForm(null,{lagerId:'${l.id}'})">+ Box</button></div>
+    <div class="section"><h2>Regale <span class="small muted">${rs.length}</span></h2>
+    ${rs.length?`<div class="regal-grid">${rs.map(r=>{const counts=cellCounts(r);const total=Object.values(counts).reduce((a,b)=>a+b,0);
+      return `<button class="card regal-tile" onclick="show('regal','${r.id}')"><div class="title">Regal ${r.nummer}${r.name?' · '+esc(r.name):''}</div><div class="small muted">${r.breite}×${r.hoehe} cm · ${r.faecher} Fächer × ${r.reihen} Reihen · ${total} Objekte</div>${shelfSvg(r,null,{counts,maxH:150})}</button>`;}).join('')}</div>`
+      :'<div class="empty">Noch kein Regal. Regale haben Fächer (A, B, C …) und Reihen (1, 2, 3 …).</div>'}</div>
+    ${loose.length?`<div class="section"><h2>Boxen ohne Regal</h2><div class="list">${loose.map(boxItem).join('')}</div></div>`:''}
+    ${looseParts.length?`<div class="section"><h2>Teile ohne Regal</h2><div class="list">${looseParts.map(t=>partItem(t)).join('')}</div></div>`:''}`;
 }
 
-/* ============ Render: Teil ============ */
+/* ============ Regal ============ */
+function cellCounts(r){
+  const c={};
+  DB.boxen.filter(b=>b.regalId===r.id).forEach(b=>{if(b.fach&&b.reihe)c[b.fach+b.reihe]=(c[b.fach+b.reihe]||0)+1;});
+  DB.teile.filter(t=>!t.boxId&&t.regalId===r.id).forEach(t=>{if(t.fach&&t.reihe)c[t.fach+t.reihe]=(c[t.fach+t.reihe]||0)+1;});
+  return c;
+}
+function regalForm(r,lagerId){
+  const isNew=!r;
+  const lid=lagerId||r?.lagerId||DB.lager[0]?.id;
+  const nextNr=Math.max(0,...regaleOf(lid).map(x=>x.nummer))+1;
+  r=r||{id:uid(),lagerId:lid,nummer:nextNr,name:'',breite:100,hoehe:200,tiefe:40,faecher:5,reihen:6,notiz:''};
+  openSheet(`<h2 style="margin-bottom:12px">${isNew?'Neues Regal':'Regal bearbeiten'}</h2><div class="stack">
+    <div class="field"><label>Lager</label><select id="f-lager">${DB.lager.map(l=>`<option value="${l.id}" ${l.id===r.lagerId?'selected':''}>${esc(l.name)}</option>`).join('')}</select></div>
+    <div class="row"><div class="field"><label>Nummer</label><input id="f-nummer" type="number" inputmode="numeric" value="${r.nummer}"></div>
+      <div class="field" style="flex:2"><label>Bezeichnung</label><input id="f-name" value="${esc(r.name)}" placeholder="z. B. Fensterwand"></div></div>
+    <div class="row"><div class="field"><label>Breite cm</label><input id="f-breite" type="number" inputmode="decimal" value="${r.breite}"></div>
+      <div class="field"><label>Höhe cm</label><input id="f-hoehe" type="number" inputmode="decimal" value="${r.hoehe}"></div>
+      <div class="field"><label>Tiefe cm</label><input id="f-tiefe" type="number" inputmode="decimal" value="${r.tiefe}"></div></div>
+    <div class="row"><div class="field"><label>Fächer (Ebenen, A–…)</label><input id="f-faecher" type="number" inputmode="numeric" min="1" max="26" value="${r.faecher}"></div>
+      <div class="field"><label>Reihen (Plätze pro Fach)</label><input id="f-reihen" type="number" inputmode="numeric" min="1" value="${r.reihen}"></div></div>
+    <div id="regalPrev" class="card" style="background:var(--paper-2)"></div>
+    <div class="field"><label>Notiz</label><textarea id="f-notiz">${esc(r.notiz||'')}</textarea></div>
+    <button class="btn full" id="f-save">${isNew?'Regal anlegen':'Speichern'}</button>
+    ${isNew?'':`<button class="btn danger full" id="f-del">Regal löschen</button>`}</div>`);
+  const read=()=>({lagerId:$('#f-lager').value,nummer:parseInt($('#f-nummer').value)||1,name:$('#f-name').value.trim(),breite:parseFloat($('#f-breite').value)||100,hoehe:parseFloat($('#f-hoehe').value)||200,tiefe:parseFloat($('#f-tiefe').value)||0,faecher:Math.min(26,Math.max(1,parseInt($('#f-faecher').value)||1)),reihen:Math.max(1,parseInt($('#f-reihen').value)||1),notiz:$('#f-notiz').value.trim()});
+  const prev=()=>{$('#regalPrev').innerHTML=shelfSvg(Object.assign({},r,read()),null,{showKeys:true,maxH:200});};
+  ['f-breite','f-hoehe','f-faecher','f-reihen'].forEach(i=>$('#'+i).addEventListener('input',prev));prev();
+  $('#f-save').onclick=async()=>{
+    const v=read();
+    if(DB.regale.some(x=>x.id!==r.id&&x.lagerId===v.lagerId&&x.nummer===v.nummer)){toast('Regalnummer in diesem Lager schon vergeben');return;}
+    Object.assign(r,v,{geaendert:now()});if(isNew)DB.regale.push(r);
+    await persist();closeSheet();show('regal',r.id,isNew);
+  };
+  if(!isNew)$('#f-del').onclick=async()=>{
+    if(DB.boxen.some(b=>b.regalId===r.id)||DB.teile.some(t=>t.regalId===r.id)){toast('Regal ist belegt – erst Boxen/Teile umlagern');return;}
+    DB.regale=DB.regale.filter(x=>x.id!==r.id);await persist();closeSheet();show('lagerdetail',r.lagerId,false);
+  };
+}
+let regalSel=null;
+function renderRegal(id){
+  const r=regalById(id);if(!r){show('lager');return;}
+  const l=lagerById(r.lagerId);
+  $('#pageTitle').textContent='Regal '+r.nummer;headAction('Bearbeiten',()=>regalForm(r));
+  const counts=cellCounts(r);
+  const draw=()=>{
+    $('#regalSvg').innerHTML=shelfSvg(r,regalSel,{counts,showKeys:true,clickable:true,maxH:380});
+    $('#regalSvg').querySelectorAll('.cell').forEach(c=>c.onclick=()=>{regalSel={fach:c.dataset.fach,reihe:c.dataset.reihe};draw();});
+    const out=$('#cellContent');
+    if(!regalSel){out.innerHTML='<p class="small muted">Fach antippen, um den Inhalt zu sehen.</p>';return;}
+    const bx=DB.boxen.filter(b=>b.regalId===r.id&&b.fach===regalSel.fach&&String(b.reihe)===String(regalSel.reihe));
+    const pt=DB.teile.filter(t=>!t.boxId&&t.regalId===r.id&&t.fach===regalSel.fach&&String(t.reihe)===String(regalSel.reihe));
+    out.innerHTML=`<h2>Fach ${regalSel.fach} · Reihe ${regalSel.reihe}</h2>
+      <div class="row" style="margin:8px 0"><button class="btn sm" onclick="boxForm(null,{lagerId:'${r.lagerId}',regalId:'${r.id}',fach:'${regalSel.fach}',reihe:'${regalSel.reihe}'})">+ Box hier</button>
+        <button class="btn quiet sm" onclick="partForm(null,{lagerId:'${r.lagerId}',regalId:'${r.id}',fach:'${regalSel.fach}',reihe:'${regalSel.reihe}'})">+ Teil hier</button></div>
+      ${bx.length||pt.length?`<div class="list">${bx.map(boxItem).join('')}${pt.map(t=>partItem(t)).join('')}</div>`:'<p class="small muted">Leer.</p>'}`;
+  };
+  $('#v-regal').innerHTML=`<div class="card"><div class="small muted">${esc(l?l.name:'')}${r.name?' · '+esc(r.name):''} · ${r.breite}×${r.hoehe}×${r.tiefe} cm</div>
+    <div id="regalSvg" style="margin-top:8px"></div>
+    <p class="small muted" style="margin-top:6px">Fächer A–${fachLetter(r.faecher)} von oben nach unten, Reihen 1–${r.reihen} von links nach rechts. Blau = belegt.</p></div>
+    <div class="section" id="cellContent"></div>`;
+  if(regalSel&&(fachIndex(regalSel.fach)>r.faecher||parseInt(regalSel.reihe)>r.reihen))regalSel=null;
+  draw();
+}
+
+/* ============ Teil ============ */
 function readImage(file){
   return new Promise((res,rej)=>{
     const img=new Image();const url=URL.createObjectURL(file);
@@ -503,10 +714,10 @@ function readImage(file){
       URL.revokeObjectURL(url);res(c.toDataURL('image/jpeg',0.72));};
     img.onerror=rej;img.src=url;});
 }
-const KATEGORIEN=['Mikrocontroller','Breakout-Board','Sensor','Display','Passiv (R/C/L)','Halbleiter','Stecker/Kabel','Mechanik','Prototyp','Druckteil','Werkzeug','Sonstiges'];
-function partForm(t,presetBox){
-  const isNew=!t; t=t||{id:uid(),name:'',kategorie:'',tags:[],menge:'',notiz:'',boxId:presetBox||'',foto:''};
-  let foto=t.foto;
+function partForm(t,preset){
+  const isNew=!t; preset=preset||{};
+  t=t||{id:uid(),name:'',kategorie:'',tags:[],menge:'',notiz:'',boxId:preset.boxId||'',lagerId:preset.lagerId||DB.lager[0]?.id||'',regalId:preset.regalId||'',fach:preset.fach||'',reihe:preset.reihe||'',foto:''};
+  let foto=t.foto; let mode=t.boxId?'box':'regal';
   openSheet(`<h2 style="margin-bottom:12px">${isNew?'Neues Teil':'Teil bearbeiten'}</h2><div class="stack">
     <div id="f-fotoprev">${foto?`<img class="hero-photo" src="${foto}">`:'<div class="photo-empty">Kein Foto</div>'}</div>
     <div class="row">
@@ -516,22 +727,29 @@ function partForm(t,presetBox){
     <input type="file" id="f-cam" accept="image/*" capture="environment" style="display:none">
     <input type="file" id="f-lib" accept="image/*" style="display:none">
     <div class="field"><label>Name</label><input id="f-name" value="${esc(t.name)}" placeholder="z. B. ESP32-C3 SuperMini"></div>
-    <div class="field"><label>Kategorie</label><select id="f-kat"><option value="">–</option>${KATEGORIEN.map(k=>`<option ${k===t.kategorie?'selected':''}>${k}</option>`).join('')}</select></div>
+    <div class="row"><div class="field"><label>Kategorie</label>${katSelectHtml('f-kat',t.kategorie)}</div>
+      <div class="field"><label>Menge</label><input id="f-menge" inputmode="numeric" value="${esc(t.menge)}"></div></div>
     <div class="field"><label>Tags (Komma-getrennt)</label><input id="f-tags" value="${esc((t.tags||[]).join(', '))}" placeholder="wifi, 3.3V, usb-c"></div>
-    <div class="row">
-      <div class="field"><label>Menge</label><input id="f-menge" inputmode="numeric" value="${esc(t.menge)}"></div>
-      <div class="field"><label>Box</label><select id="f-box"><option value="">– keine –</option>${DB.boxen.map(b=>`<option value="${b.id}" ${b.id===t.boxId?'selected':''}>${esc(b.code)} ${esc(b.name||'')}</option>`).join('')}</select></div>
-    </div>
+    <div><span class="small muted">Lagerung</span><br><span class="pill ${mode==='box'?'on':''}" id="m-box">In einer Box</span><span class="pill ${mode==='regal'?'on':''}" id="m-regal">Direkt im Regal</span></div>
+    <div id="loc-box" style="${mode==='box'?'':'display:none'}"><div class="field"><label>Box</label><select id="f-box"><option value="">– wählen –</option>${DB.boxen.map(b=>`<option value="${b.id}" ${b.id===t.boxId?'selected':''}>${esc(b.code)} ${esc(b.name||'')}</option>`).join('')}</select></div></div>
+    <div id="loc-regal" style="${mode==='regal'?'':'display:none'}">${locSelectHtml('pt',t)}</div>
     <div class="field"><label>Notiz</label><textarea id="f-notiz">${esc(t.notiz)}</textarea></div>
     <button class="btn full" id="f-save">${isNew?'Teil anlegen':'Speichern'}</button>
     ${isNew?'':`<button class="btn danger full" id="f-del">Teil löschen</button>`}</div>`);
+  katWire('f-kat');
+  if(DB.lager.length)locWire('pt',t);
+  const setMode=m=>{mode=m;$('#m-box').classList.toggle('on',m==='box');$('#m-regal').classList.toggle('on',m==='regal');$('#loc-box').style.display=m==='box'?'':'none';$('#loc-regal').style.display=m==='regal'?'':'none';};
+  $('#m-box').onclick=()=>setMode('box');$('#m-regal').onclick=()=>setMode('regal');
   const onFile=async e=>{const f=e.target.files[0];if(!f)return;try{foto=await readImage(f);$('#f-fotoprev').innerHTML=`<img class="hero-photo" src="${foto}">`;}catch{toast('Bild konnte nicht gelesen werden');}};
   $('#f-cam').onchange=onFile;$('#f-lib').onchange=onFile;
   $('#f-save').onclick=async()=>{
     const name=$('#f-name').value.trim();if(!name){toast('Name fehlt');return;}
-    Object.assign(t,{name,kategorie:$('#f-kat').value,tags:$('#f-tags').value.split(',').map(s=>s.trim()).filter(Boolean),menge:$('#f-menge').value.trim(),boxId:$('#f-box').value,notiz:$('#f-notiz').value.trim(),foto,geaendert:now()});
+    const kat=$('#f-kat').value==='__neu'?'':$('#f-kat').value;
+    let loc={boxId:'',lagerId:'',regalId:'',fach:'',reihe:''};
+    if(mode==='box')loc.boxId=$('#f-box').value; else if(DB.lager.length)Object.assign(loc,locRead('pt'));
+    Object.assign(t,loc,{name,kategorie:kat,tags:$('#f-tags').value.split(',').map(s=>s.trim()).filter(Boolean),menge:$('#f-menge').value.trim(),notiz:$('#f-notiz').value.trim(),foto,geaendert:now()});
     if(isNew)DB.teile.push(t);
-    const ok=await persist();closeSheet();if(ok)toast(isNew?'Teil angelegt':'Gespeichert');show('part',t.id,!isNew?false:true);
+    const ok=await persist();closeSheet();if(ok)toast(isNew?'Teil angelegt':'Gespeichert');show('part',t.id,isNew);
   };
   if(!isNew)$('#f-del').onclick=async()=>{if(!confirm('Teil löschen?'))return;DB.teile=DB.teile.filter(x=>x.id!==t.id);await persist();closeSheet();show('search');};
 }
@@ -557,12 +775,14 @@ function renderPart(id){
       </div>
     </div>
     <div style="margin-top:8px">${(t.tags||[]).map(x=>`<span class="pill">${esc(x)}</span>`).join('')}</div>
-    <div class="card" style="margin-top:14px">
+    <div class="card" style="margin-top:12px">
       <div class="small muted" style="margin-bottom:4px">Lagerort</div>
-      ${box?`<div class="row" style="align-items:center"><div><span class="tag" style="font-size:16px">${esc(box.code)}</span> <b>${esc(box.name||'')}</b><div style="margin-top:4px">${locHtml(box)}</div></div>
+      ${box?`<div class="row" style="align-items:center"><div><span class="tag" style="font-size:16px">${esc(box.code)}</span> <b>${esc(box.name||'')}</b><div style="margin-top:4px">${locHtml(t)}</div></div>
         <button class="btn quiet sm" style="flex:0 0 auto" onclick="show('box','${box.id}')">Box öffnen</button></div>`
-        :`<div class="row"><span class="muted">Keiner Box zugeordnet</span><button class="btn quiet sm" style="flex:0 0 auto" onclick="partForm(teilById('${t.id}'))">Zuordnen</button></div>`}
+        :locOf(t)?`<div>${locHtml(t)} <span class="small muted">(direkt im Regal, ohne Box)</span></div>`
+        :`<div class="row"><span class="muted">Kein Lagerort</span><button class="btn quiet sm" style="flex:0 0 auto" onclick="partForm(teilById('${t.id}'))">Zuordnen</button></div>`}
     </div>
+    ${shelfCard(t)}
     ${t.notiz?`<div class="card" style="margin-top:12px"><div class="small muted">Notiz</div>${esc(t.notiz).replace(/\n/g,'<br>')}</div>`:''}
     <div class="section"><h2>Ähnliche Teile im Bestand</h2>
       ${simList.length?`<div class="list sim">${simList.map(x=>partItem(x.t,`<div class="score">Ähnlichkeit ${Math.round(x.s*100)} %</div>`)).join('')}</div>`:'<p class="muted small">Noch nichts Ähnliches gelagert. Tags und Kategorie helfen beim Finden.</p>'}
@@ -581,7 +801,7 @@ async function changeMenge(id,delta){
 }
 async function aiSuggest(t){
   const out=$('#aiOut');out.textContent='Frage KI …';
-  const inv=DB.teile.filter(x=>x.id!==t.id).slice(0,150).map(x=>`${x.name} [${x.kategorie||'-'}; ${(x.tags||[]).join(',')}] in ${boxById(x.boxId)?.code||'-'}`).join('\n');
+  const inv=DB.teile.filter(x=>x.id!==t.id).slice(0,150).map(x=>`${x.name} [${x.kategorie||'-'}; ${(x.tags||[]).join(',')}] in ${boxById(x.boxId)?.code||locText(x)}`).join('\n');
   try{
     const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:600,messages:[{role:'user',content:`Du bist Lagerassistent einer Elektronik-/Prototypenwerkstatt. Gegeben ist ein Bauteil und die Bestandsliste. Nenne auf Deutsch, knapp in 3–6 Stichpunkten: welche Teile aus dem Bestand ähnlich/austauschbar sind und welche typischerweise zusammen mit diesem Teil gebraucht werden (mit Box-Code). Nur Teile aus der Liste nennen.\n\nBauteil: ${t.name} [${t.kategorie||'-'}; ${(t.tags||[]).join(',')}] ${t.notiz||''}\n\nBestand:\n${inv}`}]})});
@@ -681,10 +901,12 @@ function stopScan(){
   const b=$('#startScan');if(b){b.textContent='Kamera starten';b.onclick=startScan;}
 }
 
+
 /* ============ Etiketten ============ */
+function labelOrt(b){const l=lagerById(b.lagerId),r=regalById(b.regalId);return [l?l.name:'',r?'Regal '+r.nummer:'',b.fach?'Fach '+b.fach:'',b.reihe?'Reihe '+b.reihe:''].filter(Boolean).join(' · ');}
 function labelHtml(b,e,forPrint){
   const l=lagerById(b.lagerId);
-  const ort=[l?l.name:'',b.regal?'R '+b.regal:'',b.reihe?'Reihe '+b.reihe:'',b.fach?'F '+b.fach:''].filter(Boolean).join(' · ');
+  const ort=labelOrt(b);
   const inner=e.breite-2*e.rand, innerH=e.hoehe-2*e.rand;
   const txt=`<div class="lt" style="font-size:${e.schriftText}mm;line-height:1.15">${e.zeigeCode?`<b style="font-size:${e.schriftCode}mm;font-weight:${e.fett?700:500}">${esc(b.code)}</b>`:''}${e.zeigeName&&b.name?`<div>${esc(b.name)}</div>`:''}${e.zeigeOrt&&ort?`<div style="opacity:.75">${esc(ort)}</div>`:''}</div>`;
   const horiz=e.layout==='links';
@@ -715,7 +937,7 @@ const ETI_FIELDS=[['form','Form','select',['rund','rechteck']],['breite','Breite
 function renderLabels(){
   const e=eti();
   headAction('Alle drucken',()=>printLabels(DB.boxen.map(b=>b.id)));
-  const sample=DB.boxen[0]||{id:'x',code:'B-0001',name:'Beispiel',lagerId:'',regal:'A',reihe:'1',fach:'2'};
+  const sample=DB.boxen[0]||{id:'x',code:'B-1A2',name:'Beispiel',lagerId:'',regalId:'',reihe:'2',fach:'A'};
   $('#v-labels').innerHTML=`${labelCss(e)}
     <div class="card" style="display:flex;justify-content:center;background:var(--paper-2)"><div id="etiPreview">${labelHtml(sample,e,false)}</div></div>
     <p class="small muted" style="margin:8px 0 14px;text-align:center">Vorschau in Originalgröße (Bildschirm ≈ mm). Gestrichelter Rand ist nur hier sichtbar.</p>
@@ -782,7 +1004,7 @@ async function labelCanvas(b,dpi=300){
   const lines=[];
   if(e.zeigeCode)lines.push({t:b.code,s:e.schriftCode*mm,w:e.fett?'bold':'normal'});
   if(e.zeigeName&&b.name)lines.push({t:b.name,s:e.schriftText*mm,w:'normal'});
-  if(e.zeigeOrt){const ort=[l?l.name:'',b.regal?'R '+b.regal:'',b.reihe?'Reihe '+b.reihe:'',b.fach?'F '+b.fach:''].filter(Boolean).join(' · ');if(ort)lines.push({t:ort,s:e.schriftText*mm,w:'normal',dim:true});}
+  if(e.zeigeOrt){const ort=labelOrt(b);if(ort)lines.push({t:ort,s:e.schriftText*mm,w:'normal',dim:true});}
   const q=Math.round(e.qr*mm),pad=e.rand*mm,gap=1.5*mm;
   const textH=lines.reduce((a,x)=>a+x.s*1.2,0);
   ctx.fillStyle='#000';ctx.textAlign='center';ctx.textBaseline='top';
@@ -819,11 +1041,37 @@ async function allLabelImages(ids){
   for(const f of files){const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;a.click();await new Promise(r=>setTimeout(r,300));}
 }
 
+
 /* ============ Mehr ============ */
 function renderMore(){
-  $('#stats').textContent=`${DB.lager.length} Lager · ${DB.boxen.length} Boxen · ${DB.teile.length} Teile · ${DB.teile.filter(t=>t.foto).length} mit Foto`;
+  $('#stats').textContent=`${DB.lager.length} Lager · ${DB.regale.length} Regale · ${DB.boxen.length} Boxen · ${DB.teile.length} Teile · ${DB.teile.filter(t=>t.foto).length} mit Foto`;
   $('#storageInfo').textContent=`Speicher: ${store.mode==='artifact'?'Claude-Artefakt (dein Konto)':'lokal in diesem Browser'} · ${Math.round(JSON.stringify(DB).length/1024)} KB`;
+  renderKats();
 }
+function renderKats(){
+  const el=$('#katList');
+  el.innerHTML=DB.kategorien.length?DB.kategorien.map(k=>{const n=DB.teile.filter(t=>t.kategorie===k).length+DB.boxen.filter(b=>b.kategorie===k).length;
+    return `<div class="item"><div class="body"><div class="title">${esc(k)}</div><div class="sub">${n}× verwendet</div></div>
+      <button class="btn quiet sm" onclick="renameKat('${esc(k).replace(/'/g,"\\'")}')">Umbenennen</button><button class="btn quiet sm" style="color:var(--red)" onclick="deleteKat('${esc(k).replace(/'/g,"\\'")}')">✕</button></div>`;}).join('')
+    :'<p class="small muted">Noch keine Kategorien. Du legst sie hier oder direkt im Teil-/Box-Formular an.</p>';
+}
+async function addKat(){
+  const n=($('#katNew').value||'').trim();if(!n)return;
+  if(DB.kategorien.includes(n)){toast('Gibt es schon');return;}
+  DB.kategorien.push(n);DB.kategorien.sort((a,b)=>a.localeCompare(b));$('#katNew').value='';await persist();renderKats();
+}
+async function renameKat(k){
+  const n=(prompt('Neuer Name für „'+k+'“:',k)||'').trim();if(!n||n===k)return;
+  DB.kategorien=DB.kategorien.map(x=>x===k?n:x);DB.kategorien=[...new Set(DB.kategorien)].sort((a,b)=>a.localeCompare(b));
+  DB.teile.forEach(t=>{if(t.kategorie===k)t.kategorie=n;});DB.boxen.forEach(b=>{if(b.kategorie===k)b.kategorie=n;});
+  await persist();renderKats();
+}
+async function deleteKat(k){
+  const n=DB.teile.filter(t=>t.kategorie===k).length+DB.boxen.filter(b=>b.kategorie===k).length;
+  if(!confirm(`Kategorie „${k}“ löschen? ${n} Einträge behalten den Text, verlieren aber die Zuordnung in der Auswahl.`))return;
+  DB.kategorien=DB.kategorien.filter(x=>x!==k);await persist();renderKats();
+}
+$('#katAdd').onclick=addKat;$('#katNew').onkeydown=e=>{if(e.key==='Enter')addKat();};
 $('#exportBtn').onclick=()=>{
   const blob=new Blob([JSON.stringify(DB,null,1)],{type:'application/json'});const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);a.download='lager-export-'+new Date().toISOString().slice(0,10)+'.json';a.click();
@@ -832,33 +1080,42 @@ $('#importFile').onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
   try{
     const inc=JSON.parse(await f.text());
-    const merge=(mine,theirs)=>{theirs.forEach(x=>{const i=mine.findIndex(m=>m.id===x.id);if(i<0)mine.push(x);else if((x.geaendert||0)>(mine[i].geaendert||0))mine[i]=x;});};
-    merge(DB.lager,inc.lager||[]);merge(DB.boxen,inc.boxen||[]);merge(DB.teile,inc.teile||[]);
+    const merge=(mine,theirs)=>{(theirs||[]).forEach(x=>{const i=mine.findIndex(m=>m.id===x.id);if(i<0)mine.push(x);else if((x.geaendert||0)>(mine[i].geaendert||0))mine[i]=x;});};
+    merge(DB.lager,inc.lager);merge(DB.regale,inc.regale);merge(DB.boxen,inc.boxen);merge(DB.teile,inc.teile);
+    DB.kategorien=[...new Set([...DB.kategorien,...(inc.kategorien||[])])].sort((a,b)=>a.localeCompare(b));
     DB.seq.box=Math.max(DB.seq.box||0,inc.seq?.box||0);
-    await persist();toast('Import zusammengeführt');show('more');
+    migrate();await persist();toast('Import zusammengeführt');show('more');
   }catch{toast('Datei nicht lesbar');}
   e.target.value='';
 };
-$('#wipeBtn').onclick=async()=>{if(!confirm('Wirklich alle Daten löschen?'))return;DB={lager:[],boxen:[],teile:[],seq:{box:0}};await persist();show('more');};
+$('#wipeBtn').onclick=async()=>{if(!confirm('Wirklich alle Daten löschen?'))return;DB=EMPTY();await persist();show('more');};
 $('#demoBtn').onclick=async()=>{
-  const L1={id:'L-buero',name:'Büro Mosbach',ort:'Hauptlager',notiz:'',geaendert:now()};
-  const L2={id:'L-vater',name:'Lager Vater',ort:'Außenlager',notiz:'',geaendert:now()};
+  const L1={id:'L-buero',name:'Büro',kuerzel:'B',ort:'Hauptlager',notiz:'',geaendert:now()};
+  const L2={id:'L-vater',name:'Lager Vater',kuerzel:'V',ort:'Außenlager',notiz:'',geaendert:now()};
   if(!lagerById(L1.id))DB.lager.push(L1);if(!lagerById(L2.id))DB.lager.push(L2);
-  const mk=(code,name,lagerId,regal,reihe,fach)=>{let b=boxByCode(code);if(!b){b={id:'B'+code,code,name,lagerId,regal,reihe,fach,geaendert:now()};DB.boxen.push(b);DB.seq.box=Math.max(DB.seq.box,parseInt(code.slice(2)));}return b;};
-  const b1=mk('B-0001','ESP32 & Mikrocontroller',L1.id,'A','1','1'),b2=mk('B-0002','Sensoren',L1.id,'A','1','2'),b3=mk('B-0003','Displays',L1.id,'A','2','1'),b4=mk('B-0004','InstaDash Prototypen',L1.id,'B','1','1'),b5=mk('B-0005','Stecker & Kabel',L2.id,'1','1','');
+  const mkR=(id,lagerId,nummer,name,breite,hoehe,faecher,reihen)=>{let r=regalById(id);if(!r){r={id,lagerId,nummer,name,breite,hoehe,tiefe:40,faecher,reihen,notiz:'',geaendert:now()};DB.regale.push(r);}return r;};
+  const R1=mkR('R-b1',L1.id,1,'Fensterwand',120,200,5,4),R2=mkR('R-b2',L1.id,2,'Tür',80,180,4,3),R3=mkR('R-v1',L2.id,1,'',100,200,5,5);
+  ['Mikrocontroller','Breakout-Board','Sensor','Display','Prototyp','Stecker/Kabel','Chemie/Flüssig'].forEach(k=>{if(!DB.kategorien.includes(k))DB.kategorien.push(k);});DB.kategorien.sort();
+  const mk=(r,fach,reihe,name,kat)=>{const loc={lagerId:r.lagerId,regalId:r.id,fach,reihe:String(reihe)};let b=DB.boxen.find(x=>x.regalId===r.id&&x.fach===fach&&String(x.reihe)===String(reihe)&&x.name===name);
+    if(!b){b=Object.assign({id:uid(),code:autoCode(loc),name,kategorie:kat,geaendert:now()},loc);DB.boxen.push(b);}return b;};
+  const b1=mk(R1,'A',1,'ESP32 & Mikrocontroller','Mikrocontroller'),b2=mk(R1,'A',2,'Sensoren','Sensor'),b3=mk(R1,'B',1,'Displays','Display'),b4=mk(R2,'A',1,'InstaDash Prototypen','Prototyp'),b5=mk(R3,'C',2,'Stecker & Kabel','Stecker/Kabel');
   const T=[
-    ['ESP32-C3 SuperMini','Mikrocontroller',['wifi','ble','usb-c','3.3V'],'12',b1],['ESP32 DevKit V1','Mikrocontroller',['wifi','ble','30pin'],'5',b1],['Arduino Nano','Mikrocontroller',['atmega328','5V','usb-mini'],'3',b1],['Raspberry Pi Pico W','Mikrocontroller',['rp2040','wifi','usb-micro'],'2',b1],
-    ['BME280 Breakout','Breakout-Board',['temperatur','druck','feuchte','i2c'],'4',b2],['MPU6050 Breakout','Breakout-Board',['imu','gyro','i2c'],'6',b2],['DS18B20 Temperatursensor','Sensor',['temperatur','onewire'],'10',b2],
-    ['1.3" OLED SH1106 I2C','Display',['oled','i2c','128x64'],'3',b3],['0.96" OLED SSD1306','Display',['oled','i2c','128x64'],'7',b3],['ILI9341 TFT 2.8"','Display',['tft','spi','320x240'],'2',b3],
-    ['InstaDash PCB v3','Prototyp',['can','esp32','obd','pcb'],'8',b4],['MCP2515 CAN-Modul','Breakout-Board',['can','spi'],'5',b4],['SN65HVD230 CAN-Transceiver','Breakout-Board',['can','3.3V'],'4',b4],
-    ['OBD-II Stecker 16-pol','Stecker/Kabel',['obd','stecker'],'6',b5],['JST-XH Sortiment','Stecker/Kabel',['jst','2.54mm'],'1',b5],['USB-C Buchse Breakout','Breakout-Board',['usb-c','5V'],'9',b5]];
-  T.forEach(([name,kategorie,tags,menge,b])=>{if(!DB.teile.some(t=>t.name===name))DB.teile.push({id:uid(),name,kategorie,tags,menge,notiz:'',boxId:b.id,foto:'',geaendert:now()});});
+    ['ESP32-C3 SuperMini','Mikrocontroller',['wifi','ble','usb-c','3.3V'],'12',b1],['ESP32 DevKit V1','Mikrocontroller',['wifi','ble','30pin'],'5',b1],['Raspberry Pi Pico W','Mikrocontroller',['rp2040','wifi'],'2',b1],
+    ['BME280 Breakout','Breakout-Board',['temperatur','druck','feuchte','i2c'],'4',b2],['MPU6050 Breakout','Breakout-Board',['imu','gyro','i2c'],'6',b2],
+    ['1.3" OLED SH1106 I2C','Display',['oled','i2c','128x64'],'3',b3],['ILI9341 TFT 2.8"','Display',['tft','spi','320x240'],'2',b3],
+    ['InstaDash PCB v3','Prototyp',['can','esp32','obd','pcb'],'8',b4],['MCP2515 CAN-Modul','Breakout-Board',['can','spi'],'5',b4],
+    ['OBD-II Stecker 16-pol','Stecker/Kabel',['obd','stecker'],'6',b5],['USB-C Buchse Breakout','Breakout-Board',['usb-c','5V'],'9',b5]];
+  T.forEach(([name,kategorie,tags,menge,b])=>{if(!DB.teile.some(t=>t.name===name))DB.teile.push({id:uid(),name,kategorie,tags,menge,notiz:'',boxId:b.id,lagerId:'',regalId:'',fach:'',reihe:'',foto:'',geaendert:now()});});
+  // Teile direkt im Regal, ohne Box
+  [['Isopropanol 5 l Kanister','Chemie/Flüssig',['ipa','reiniger'],'1',R1,'E',1],['Aceton 1 l','Chemie/Flüssig',['loesemittel'],'2',R1,'E',2],['PLA-Spule Schwarz','',['filament','1.75mm'],'4',R2,'D',1]]
+    .forEach(([name,kategorie,tags,menge,r,fach,reihe])=>{if(!DB.teile.some(t=>t.name===name))DB.teile.push({id:uid(),name,kategorie,tags,menge,notiz:'',boxId:'',lagerId:r.lagerId,regalId:r.id,fach,reihe:String(reihe),foto:'',geaendert:now()});});
   await persist();toast('Beispieldaten geladen');show('search');
 };
 
 /* ============ Start ============ */
 (async()=>{
-  const d=await store.load(); if(d&&d.lager)DB=Object.assign({lager:[],boxen:[],teile:[],seq:{box:0}},d);
+  const d=await store.load(); if(d&&d.lager)DB=Object.assign(EMPTY(),d);
+  migrate();
   const hash=location.hash.match(/^#box=(.+)$/);
   show('search'); if(hash)openCode(decodeURIComponent(hash[1]));
   window.addEventListener('hashchange',()=>{const h=location.hash.match(/^#box=(.+)$/);if(h)openCode(decodeURIComponent(h[1]));});
