@@ -732,14 +732,19 @@ function renderLabels(){
       <p class="small muted">QR-Inhalt „url“: die iPhone-Kamera öffnet die Box direkt in der App. „text“: nur der App-Scanner liest ihn.</p>
       <div class="row"><button class="btn quiet" id="etiReset">Zurücksetzen</button><button class="btn" id="etiSave">Speichern</button></div>
     </div>
-    <div class="section"><h2>Boxen <span class="small muted">${DB.boxen.length}</span></h2>
-      <p class="small muted" style="margin-bottom:8px">Pro Box: Bild fürs Drucker-App (PNG, 300 dpi) oder Drucken über AirPrint.</p>
-      <div class="list">${DB.boxen.map(b=>`<div class="item"><div class="thumb" style="background:var(--tape);font-weight:700;font-size:13px">${esc(b.code)}</div><div class="body"><div class="title">${esc(b.name||'')}</div><div class="sub">${esc(locText(b))}</div></div>
-        <button class="btn quiet sm" onclick="labelImage('${b.id}')">Bild</button><button class="btn quiet sm" onclick="printLabels(['${b.id}'])">Druck</button></div>`).join('')}</div>
-      <button class="btn ghost full" style="margin-top:12px" onclick="allLabelImages()">Alle Etiketten als Bilder</button>
+    <div class="section"><h2>Boxen auswählen <span class="small muted" id="selCount">0 / ${DB.boxen.length}</span></h2>
+      <div style="margin-bottom:8px"><span class="pill" onclick="selAll(true)">Alle</span><span class="pill" onclick="selAll(false)">Keine</span>${DB.lager.map(l=>`<span class="pill" onclick="selLager('${l.id}')">${esc(l.name)}</span>`).join('')}</div>
+      <div class="list">${DB.boxen.map(b=>`<label class="item" style="cursor:pointer"><input type="checkbox" class="selBox" value="${b.id}" style="width:22px;height:22px;flex:none;accent-color:var(--blue)"><div class="thumb" style="background:var(--tape);font-weight:700;font-size:13px">${esc(b.code)}</div><div class="body"><div class="title">${esc(b.name||'')}</div><div class="sub">${esc(locText(b))}</div></div>
+        <button class="btn quiet sm" onclick="event.preventDefault();labelImage('${b.id}')">Bild</button></label>`).join('')}</div>
+      <div class="row" style="margin-top:12px"><button class="btn quiet" id="selImg" disabled>Ausgewählte als Bilder</button><button class="btn" id="selPrint" disabled>Ausgewählte drucken</button></div>
     </div>
 `;
   fillQRs($('#etiPreview'),300);
+  const upd=()=>{const n=selIds().length;$('#selCount').textContent=n+' / '+DB.boxen.length;$('#selImg').disabled=$('#selPrint').disabled=!n;};
+  document.querySelectorAll('.selBox').forEach(c=>c.addEventListener('change',upd));
+  $('#selPrint').onclick=()=>printLabels(selIds());
+  $('#selImg').onclick=()=>allLabelImages(selIds());
+  window._selUpd=upd;
   const read=()=>{const o=eti();ETI_FIELDS.forEach(([k,,type])=>{const v=$('#eti-'+k).value;o[k]=type==='num'?(parseFloat(v)||0):v;});
     document.querySelectorAll('#v-labels .pill[data-k]').forEach(p=>o[p.dataset.k]=p.classList.contains('on'));return o;};
   const refresh=()=>{const o=read();$('#etiCss').outerHTML=labelCss(o);$('#etiPreview').innerHTML=labelHtml(sample,o,false);fillQRs($('#etiPreview'),300);};
@@ -748,6 +753,9 @@ function renderLabels(){
   $('#etiSave').onclick=async()=>{DB.etikett=read();await persist();toast('Etikett gespeichert');};
   $('#etiReset').onclick=async()=>{DB.etikett={};await persist();renderLabels();};
 }
+function selIds(){return [...document.querySelectorAll('.selBox:checked')].map(c=>c.value);}
+function selAll(on){document.querySelectorAll('.selBox').forEach(c=>c.checked=on);window._selUpd&&window._selUpd();}
+function selLager(lid){document.querySelectorAll('.selBox').forEach(c=>{c.checked=boxById(c.value)?.lagerId===lid;});window._selUpd&&window._selUpd();}
 function fieldHtml([k,label,type,opts],e){
   return `<div class="field"><label>${label}</label>${type==='select'?`<select id="eti-${k}">${opts.map(o=>`<option ${e[k]===o?'selected':''}>${o}</option>`).join('')}</select>`:`<input id="eti-${k}" type="number" step="0.1" inputmode="decimal" value="${e[k]}">`}</div>`;
 }
@@ -802,10 +810,11 @@ async function labelImage(id){
   const b=boxById(id);if(!b)return;
   try{const c=await labelCanvas(b);await shareCanvas(c,'Etikett-'+b.code+'.png');}catch(e){toast('Etikett konnte nicht erzeugt werden');}
 }
-async function allLabelImages(){
-  if(!DB.boxen.length)return;
+async function allLabelImages(ids){
+  const boxes=ids?ids.map(boxById).filter(Boolean):DB.boxen;
+  if(!boxes.length)return;
   const files=[];
-  for(const b of DB.boxen){const c=await labelCanvas(b);const blob=await new Promise(r=>c.toBlob(r,'image/png'));files.push(new File([blob],'Etikett-'+b.code+'.png',{type:'image/png'}));}
+  for(const b of boxes){const c=await labelCanvas(b);const blob=await new Promise(r=>c.toBlob(r,'image/png'));files.push(new File([blob],'Etikett-'+b.code+'.png',{type:'image/png'}));}
   if(navigator.canShare&&navigator.canShare({files})){try{await navigator.share({files,title:'Etiketten'});return;}catch(e){if(e.name==='AbortError')return;}}
   for(const f of files){const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;a.click();await new Promise(r=>setTimeout(r,300));}
 }
