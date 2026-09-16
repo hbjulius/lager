@@ -194,9 +194,9 @@
         <p class="muted small" id="stats"></p>
       </div>
       <div class="card stack">
-        <h2>Etiketten drucken</h2>
-        <p class="small muted">Alle Box-QR-Codes als Druckbogen. Auf dem iPhone: Teilen → Drucken.</p>
-        <button class="btn ghost full" onclick="show('labels')">Druckbogen öffnen</button>
+        <h2>Etiketten</h2>
+        <p class="small muted">Format, Größe und Inhalt der Box-Etiketten einstellen, als Bild für den Thermodrucker speichern oder direkt drucken.</p>
+        <button class="btn ghost full" onclick="show('labels')">Etiketten-Editor öffnen</button>
       </div>
       <div class="card stack">
         <h2>Daten austauschen</h2>
@@ -291,6 +291,23 @@ function locHtml(box){
   return s+'</span>';
 }
 const QR_PREFIX='LAGER:BOX:';
+const ETI_DEFAULT={form:'rund',breite:50,hoehe:50,rand:3,qr:26,layout:'oben',inhalt:'url',zeigeCode:true,zeigeName:true,zeigeOrt:true,schriftCode:4.2,schriftText:2.6,fett:true};
+function eti(){return Object.assign({},ETI_DEFAULT,DB.etikett||{});}
+function appUrl(){return location.origin+location.pathname;}
+function qrText(b){return eti().inhalt==='url'?appUrl()+'#box='+encodeURIComponent(b.code):QR_PREFIX+b.code;}
+function ensureQRCode(){
+  return new Promise(res=>{
+    if(typeof QRCode!=='undefined')return res(true);
+    const s=document.createElement('script');s.src='https://unpkg.com/qrcodejs2@0.0.2/qrcode.min.js';
+    s.onload=()=>res(typeof QRCode!=='undefined');s.onerror=()=>res(false);document.head.appendChild(s);
+  });
+}
+async function makeQR(el,text,px){
+  if(!el)return null; el.innerHTML='';
+  if(!(await ensureQRCode())){el.innerHTML='<div class="small" style="color:var(--red);width:'+px+'px">QR-Bibliothek nicht geladen (Internet?)</div>';return null;}
+  new QRCode(el,{text,width:px,height:px,correctLevel:QRCode.CorrectLevel.M});
+  return el.querySelector('canvas')||el.querySelector('img');
+}
 
 /* ============ Ähnlichkeit ============ */
 const norm=s=>String(s||'').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
@@ -435,9 +452,10 @@ function renderBox(id){
     <div class="card qr-wrap"><div class="qr" id="qrBox"></div><div class="code">${esc(b.code)}</div>
       <div>${esc(b.name||'')}</div>${locHtml(b)}</div>
     <div class="row" style="margin-top:12px"><button class="btn full" onclick="partForm(null,'${b.id}')">+ Teil in diese Box</button></div>
+    <div class="row" style="margin-top:8px"><button class="btn quiet" onclick="labelImage('${b.id}')">Etikett als Bild</button><button class="btn quiet" onclick="printLabels(['${b.id}'])">Etikett drucken</button></div>
     <div class="section"><h2>Inhalt <span class="small muted">${parts.length}</span></h2>
       ${parts.length?`<div class="list">${parts.map(t=>partItem(t)).join('')}</div>`:`<div class="empty">Diese Box ist leer.</div>`}</div>`;
-  new QRCode($('#qrBox'),{text:QR_PREFIX+b.code,width:180,height:180,correctLevel:QRCode.CorrectLevel.M});
+  makeQR($('#qrBox'),qrText(b),180);
 }
 
 /* ============ Render: Lager ============ */
@@ -611,7 +629,9 @@ function renderScan(){
   $('#manualCode').onkeydown=e=>{if(e.key==='Enter')openCode(e.target.value);};
 }
 function openCode(raw){
-  let c=String(raw||'').trim(); if(c.startsWith(QR_PREFIX))c=c.slice(QR_PREFIX.length);
+  let c=String(raw||'').trim();
+  const m=c.match(/#box=([^&\s]+)/); if(m)c=decodeURIComponent(m[1]);
+  if(c.startsWith(QR_PREFIX))c=c.slice(QR_PREFIX.length);
   const b=boxByCode(c); if(b){show('box',b.id);} else toast('Box „'+c+'“ nicht gefunden');
 }
 async function startScan(){
@@ -662,11 +682,132 @@ function stopScan(){
 }
 
 /* ============ Etiketten ============ */
+function labelHtml(b,e,forPrint){
+  const l=lagerById(b.lagerId);
+  const ort=[l?l.name:'',b.regal?'R '+b.regal:'',b.reihe?'Reihe '+b.reihe:'',b.fach?'F '+b.fach:''].filter(Boolean).join(' · ');
+  const inner=e.breite-2*e.rand, innerH=e.hoehe-2*e.rand;
+  const txt=`<div class="lt" style="font-size:${e.schriftText}mm;line-height:1.15">${e.zeigeCode?`<b style="font-size:${e.schriftCode}mm;font-weight:${e.fett?700:500}">${esc(b.code)}</b>`:''}${e.zeigeName&&b.name?`<div>${esc(b.name)}</div>`:''}${e.zeigeOrt&&ort?`<div style="opacity:.75">${esc(ort)}</div>`:''}</div>`;
+  const horiz=e.layout==='links';
+  return `<div class="etikett ${e.form}" data-id="${b.id}" style="width:${e.breite}mm;height:${e.hoehe}mm;padding:${e.rand}mm;${forPrint?'':'border:1px dashed var(--line);'}">
+    <div class="ei" style="width:${inner}mm;height:${innerH}mm;flex-direction:${horiz?'row':'column'}">
+      <div class="lq" style="width:${e.qr}mm;height:${e.qr}mm;flex:none"></div>${txt}</div></div>`;
+}
+async function fillQRs(root,px){
+  for(const el of root.querySelectorAll('.etikett')){
+    const b=boxById(el.dataset.id);const q=el.querySelector('.lq');
+    await makeQR(q,qrText(b),px);
+    const c=q.querySelector('canvas'),im=q.querySelector('img');
+    [c,im].forEach(x=>{if(x){x.style.width='100%';x.style.height='100%';x.style.display='block';}});
+  }
+}
+function labelCss(e,print){
+  return `<style id="etiCss">
+  .etikett{background:#fff;color:#000;box-sizing:border-box;display:flex;align-items:center;justify-content:center;overflow:hidden;font-family:Helvetica,Arial,sans-serif}
+  .etikett.rund{border-radius:50%}
+  .etikett .ei{display:flex;align-items:center;justify-content:center;gap:1.5mm;text-align:center}
+  .etikett .lt{overflow:hidden;word-break:break-word;min-width:0}
+  .etikett .lt b{display:block}
+  @media print{@page{size:${e.breite}mm ${e.hoehe}mm;margin:0}
+    #printArea{display:block!important}.etikett{page-break-after:always;border:0!important;border-radius:0!important}}
+  </style>`;
+}
+const ETI_FIELDS=[['form','Form','select',['rund','rechteck']],['breite','Breite mm','num'],['hoehe','Höhe mm','num'],['rand','Rand mm','num'],['qr','QR-Größe mm','num'],['layout','Anordnung','select',['oben','links']],['inhalt','QR-Inhalt','select',['url','text']],['schriftCode','Schrift Code mm','num'],['schriftText','Schrift Text mm','num']];
 function renderLabels(){
-  headAction('Drucken',()=>window.print());
-  $('#v-labels').innerHTML=`<p class="small muted no-print" style="margin-bottom:12px">${DB.boxen.length} Etiketten. Auf Etikettenpapier drucken und auf die Boxen kleben.</p>
-    <div class="labels">${DB.boxen.map(b=>`<div class="label"><div class="qr" id="lbl-${b.id}"></div><div class="t"><b>${esc(b.code)}</b>${esc(b.name||'')}<br><span class="muted">${esc(locText(b))}</span></div></div>`).join('')}</div>`;
-  DB.boxen.forEach(b=>new QRCode(document.getElementById('lbl-'+b.id),{text:QR_PREFIX+b.code,width:80,height:80,correctLevel:QRCode.CorrectLevel.M}));
+  const e=eti();
+  headAction('Alle drucken',()=>printLabels(DB.boxen.map(b=>b.id)));
+  const sample=DB.boxen[0]||{id:'x',code:'B-0001',name:'Beispiel',lagerId:'',regal:'A',reihe:'1',fach:'2'};
+  $('#v-labels').innerHTML=`${labelCss(e)}
+    <div class="card" style="display:flex;justify-content:center;background:var(--paper-2)"><div id="etiPreview">${labelHtml(sample,e,false)}</div></div>
+    <p class="small muted" style="margin:8px 0 14px;text-align:center">Vorschau in Originalgröße (Bildschirm ≈ mm). Gestrichelter Rand ist nur hier sichtbar.</p>
+    <div class="card stack">
+      <div class="row">${ETI_FIELDS.slice(0,3).map(f=>fieldHtml(f,e)).join('')}</div>
+      <div class="row">${ETI_FIELDS.slice(3,6).map(f=>fieldHtml(f,e)).join('')}</div>
+      <div class="row">${ETI_FIELDS.slice(6).map(f=>fieldHtml(f,e)).join('')}</div>
+      <div>
+        <label class="pill ${e.zeigeCode?'on':''}" data-k="zeigeCode">Code</label>
+        <label class="pill ${e.zeigeName?'on':''}" data-k="zeigeName">Bezeichnung</label>
+        <label class="pill ${e.zeigeOrt?'on':''}" data-k="zeigeOrt">Lagerort</label>
+        <label class="pill ${e.fett?'on':''}" data-k="fett">Code fett</label>
+      </div>
+      <p class="small muted">QR-Inhalt „url“: die iPhone-Kamera öffnet die Box direkt in der App. „text“: nur der App-Scanner liest ihn.</p>
+      <div class="row"><button class="btn quiet" id="etiReset">Zurücksetzen</button><button class="btn" id="etiSave">Speichern</button></div>
+    </div>
+    <div class="section"><h2>Boxen <span class="small muted">${DB.boxen.length}</span></h2>
+      <p class="small muted" style="margin-bottom:8px">Pro Box: Bild fürs Drucker-App (PNG, 300 dpi) oder Drucken über AirPrint.</p>
+      <div class="list">${DB.boxen.map(b=>`<div class="item"><div class="thumb" style="background:var(--tape);font-weight:700;font-size:13px">${esc(b.code)}</div><div class="body"><div class="title">${esc(b.name||'')}</div><div class="sub">${esc(locText(b))}</div></div>
+        <button class="btn quiet sm" onclick="labelImage('${b.id}')">Bild</button><button class="btn quiet sm" onclick="printLabels(['${b.id}'])">Druck</button></div>`).join('')}</div>
+      <button class="btn ghost full" style="margin-top:12px" onclick="allLabelImages()">Alle Etiketten als Bilder</button>
+    </div>
+`;
+  fillQRs($('#etiPreview'),300);
+  const read=()=>{const o=eti();ETI_FIELDS.forEach(([k,,type])=>{const v=$('#eti-'+k).value;o[k]=type==='num'?(parseFloat(v)||0):v;});
+    document.querySelectorAll('#v-labels .pill[data-k]').forEach(p=>o[p.dataset.k]=p.classList.contains('on'));return o;};
+  const refresh=()=>{const o=read();$('#etiCss').outerHTML=labelCss(o);$('#etiPreview').innerHTML=labelHtml(sample,o,false);fillQRs($('#etiPreview'),300);};
+  ETI_FIELDS.forEach(([k])=>$('#eti-'+k).addEventListener('input',refresh));
+  document.querySelectorAll('#v-labels .pill[data-k]').forEach(p=>p.onclick=()=>{p.classList.toggle('on');refresh();});
+  $('#etiSave').onclick=async()=>{DB.etikett=read();await persist();toast('Etikett gespeichert');};
+  $('#etiReset').onclick=async()=>{DB.etikett={};await persist();renderLabels();};
+}
+function fieldHtml([k,label,type,opts],e){
+  return `<div class="field"><label>${label}</label>${type==='select'?`<select id="eti-${k}">${opts.map(o=>`<option ${e[k]===o?'selected':''}>${o}</option>`).join('')}</select>`:`<input id="eti-${k}" type="number" step="0.1" inputmode="decimal" value="${e[k]}">`}</div>`;
+}
+async function printLabels(ids){
+  const e=eti();
+  let area=$('#printArea');
+  if(!area){area=document.createElement('div');area.id='printArea';area.style.display='none';}
+  if(area.parentElement!==document.body)document.body.appendChild(area);
+  if(!$('#etiCss'))document.head.insertAdjacentHTML('beforeend',labelCss(e));
+  area.innerHTML=ids.map(id=>labelHtml(boxById(id),e,true)).join('');
+  await fillQRs(area,400);
+  const main=document.querySelector('main');const old=main.style.display;main.style.display='none';
+  setTimeout(()=>{window.print();main.style.display=old;},200);
+}
+async function labelCanvas(b,dpi=300){
+  const e=eti();const mm=dpi/25.4;const W=Math.round(e.breite*mm),H=Math.round(e.hoehe*mm);
+  const c=document.createElement('canvas');c.width=W;c.height=H;const ctx=c.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);
+  const tmp=document.createElement('div');tmp.style.position='fixed';tmp.style.left='-9999px';document.body.appendChild(tmp);
+  const qimg=await makeQR(tmp,qrText(b),Math.round(e.qr*mm));
+  if(!qimg){document.body.removeChild(tmp);throw new Error('QR');}
+  if(qimg.tagName==='IMG'&&!qimg.complete)await new Promise(r=>{qimg.onload=r;});
+  const l=lagerById(b.lagerId);
+  const lines=[];
+  if(e.zeigeCode)lines.push({t:b.code,s:e.schriftCode*mm,w:e.fett?'bold':'normal'});
+  if(e.zeigeName&&b.name)lines.push({t:b.name,s:e.schriftText*mm,w:'normal'});
+  if(e.zeigeOrt){const ort=[l?l.name:'',b.regal?'R '+b.regal:'',b.reihe?'Reihe '+b.reihe:'',b.fach?'F '+b.fach:''].filter(Boolean).join(' · ');if(ort)lines.push({t:ort,s:e.schriftText*mm,w:'normal',dim:true});}
+  const q=Math.round(e.qr*mm),pad=e.rand*mm,gap=1.5*mm;
+  const textH=lines.reduce((a,x)=>a+x.s*1.2,0);
+  ctx.fillStyle='#000';ctx.textAlign='center';ctx.textBaseline='top';
+  const wrap=(t,s,maxW)=>{ctx.font=`${s}px Helvetica,Arial,sans-serif`;const words=String(t).split(' ');const out=[];let cur='';
+    words.forEach(w=>{const test=cur?cur+' '+w:w;if(ctx.measureText(test).width>maxW&&cur){out.push(cur);cur=w;}else cur=test;});if(cur)out.push(cur);return out;};
+  if(e.layout==='links'){
+    const totalW=q+gap+Math.min(W-2*pad-q-gap, (W-2*pad));const x0=(W-(W-2*pad))/2;
+    const qy=(H-q)/2;ctx.drawImage(qimg,pad,qy,q,q);
+    const tx=pad+q+gap,tw=W-pad-tx;let y=(H-textH)/2;ctx.textAlign='left';
+    lines.forEach(x=>{ctx.font=`${x.w} ${x.s}px Helvetica,Arial,sans-serif`;ctx.fillStyle=x.dim?'#555':'#000';wrap(x.t,x.s,tw).slice(0,2).forEach(ln=>{ctx.font=`${x.w} ${x.s}px Helvetica,Arial,sans-serif`;ctx.fillText(ln,tx,y);y+=x.s*1.2;});});
+  }else{
+    const total=q+(lines.length?gap+textH:0);let y=(H-total)/2;
+    ctx.drawImage(qimg,(W-q)/2,y,q,q);y+=q+gap;
+    const tw=e.form==='rund'?W*0.72:W-2*pad;
+    lines.forEach(x=>{ctx.font=`${x.w} ${x.s}px Helvetica,Arial,sans-serif`;ctx.fillStyle=x.dim?'#555':'#000';wrap(x.t,x.s,tw).slice(0,2).forEach(ln=>{ctx.font=`${x.w} ${x.s}px Helvetica,Arial,sans-serif`;ctx.fillText(ln,W/2,y);y+=x.s*1.2;});});
+  }
+  document.body.removeChild(tmp);return c;
+}
+async function shareCanvas(c,name){
+  const blob=await new Promise(r=>c.toBlob(r,'image/png'));const file=new File([blob],name,{type:'image/png'});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){try{await navigator.share({files:[file],title:name});return;}catch(e){if(e.name==='AbortError')return;}}
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();
+}
+async function labelImage(id){
+  const b=boxById(id);if(!b)return;
+  try{const c=await labelCanvas(b);await shareCanvas(c,'Etikett-'+b.code+'.png');}catch(e){toast('Etikett konnte nicht erzeugt werden');}
+}
+async function allLabelImages(){
+  if(!DB.boxen.length)return;
+  const files=[];
+  for(const b of DB.boxen){const c=await labelCanvas(b);const blob=await new Promise(r=>c.toBlob(r,'image/png'));files.push(new File([blob],'Etikett-'+b.code+'.png',{type:'image/png'}));}
+  if(navigator.canShare&&navigator.canShare({files})){try{await navigator.share({files,title:'Etiketten'});return;}catch(e){if(e.name==='AbortError')return;}}
+  for(const f of files){const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;a.click();await new Promise(r=>setTimeout(r,300));}
 }
 
 /* ============ Mehr ============ */
@@ -711,6 +852,7 @@ $('#demoBtn').onclick=async()=>{
   const d=await store.load(); if(d&&d.lager)DB=Object.assign({lager:[],boxen:[],teile:[],seq:{box:0}},d);
   const hash=location.hash.match(/^#box=(.+)$/);
   show('search'); if(hash)openCode(decodeURIComponent(hash[1]));
+  window.addEventListener('hashchange',()=>{const h=location.hash.match(/^#box=(.+)$/);if(h)openCode(decodeURIComponent(h[1]));});
 })();
 </script>
 </body>
