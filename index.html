@@ -154,7 +154,8 @@
       <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
       <input id="q" type="search" placeholder="Bauteil, Box-Code, Tag …" autocomplete="off" enterkeyhint="search">
     </div>
-    <div id="filters" style="margin-top:10px"></div>
+    <div id="banner" style="margin-top:10px"></div>
+    <div id="filters" style="margin-top:6px"></div>
     <div id="searchResults" style="margin-top:8px"></div>
     <div id="similarResults"></div>
   </section>
@@ -196,6 +197,7 @@
       <div class="card">
         <h2>Bestand</h2>
         <p class="muted small" id="stats"></p>
+        <div class="row" style="margin-top:10px"><button class="btn quiet" onclick="show('eingang')">Wareneingang</button><button class="btn quiet" onclick="show('nachbestellen')">Nachbestellen</button></div>
       </div>
       <div class="card stack">
         <h2>Kategorien</h2>
@@ -232,6 +234,10 @@
   <section class="view" id="v-box"></section>
   <!-- DETAIL: Lager -->
   <section class="view" id="v-lagerdetail"></section>
+  <!-- NACHBESTELLEN -->
+  <section class="view" id="v-nachbestellen"></section>
+  <!-- WARENEINGANG -->
+  <section class="view" id="v-eingang"></section>
   <!-- DETAIL: Regal -->
   <section class="view" id="v-regal"></section>
   <!-- Druckbogen -->
@@ -314,10 +320,14 @@ const teilById=id=>DB.teile.find(t=>t.id===id);
 const fachLetter=i=>String.fromCharCode(64+i);          // 1 → A
 const fachIndex=l=>l?l.toUpperCase().charCodeAt(0)-64:0; // A → 1
 const isOrg=r=>r&&r.typ==='organiser';
+const inEingang=o=>!locOf(o);
+const eingangList=()=>({teile:DB.teile.filter(inEingang),boxen:DB.boxen.filter(b=>!b.lagerId&&!b.regalId)});
+const unterMin=()=>DB.teile.filter(t=>t.min!==''&&t.min!==undefined&&parseInt(t.min)>=0&&(parseInt(t.menge)||0)<parseInt(t.min)).sort((a,b)=>a.name.localeCompare(b.name));
 const regaleOf=lid=>DB.regale.filter(r=>r.lagerId===lid).sort((a,b)=>(isOrg(a)-isOrg(b))||(a.nummer-b.nummer));
 const regalLabel=r=>r?(isOrg(r)?'Organiser ':'Regal ')+r.nummer+(r.name?' '+r.name:''):'';
 const TYP_LABELS={regal:{fach:'Fach',reihe:'Reihe',zelle:'Fach'},organiser:{fach:'Zeile',reihe:'Spalte',zelle:'Schublade'}};
 const typLabels=r=>TYP_LABELS[isOrg(r)?'organiser':'regal'];
+const reihenIn=(r,f)=>{const z=r.zeilen&&r.zeilen[f-1];return Math.max(1,parseInt(z)||r.reihen||1);};
 
 /* Lagerort eines Objekts: Box → eigene Felder; Teil → Box oder eigene Felder */
 function locOf(o){
@@ -328,7 +338,7 @@ function locOf(o){
   return {lagerId:o.lagerId||r?.lagerId||'',regalId:o.regalId||'',fach:o.fach||'',reihe:o.reihe||'',stapel:o.stapel||''};
 }
 function locText(o){
-  const L=locOf(o);if(!L)return o&&o.boxId===''?'ohne Lagerort':'ohne Lagerort';
+  const L=locOf(o);if(!L)return 'Wareneingang';
   const l=lagerById(L.lagerId),r=regalById(L.regalId);
   const p=[l?l.name:'?'];
   if(r)p.push((isOrg(r)?'Organiser ':'Regal ')+r.nummer);
@@ -338,7 +348,7 @@ function locText(o){
   return p.join(' · ');
 }
 function locHtml(o){
-  const L=locOf(o);if(!L)return '<span class="loc">ohne Lagerort</span>';
+  const L=locOf(o);if(!L)return '<span class="loc" style="color:var(--red)">Wareneingang – noch nicht einsortiert</span>';
   const l=lagerById(L.lagerId),r=regalById(L.regalId);
   let s=`<span class="loc"><b>${esc(l?l.name:'?')}</b>`;
   if(r)s+=` · ${isOrg(r)?'Organiser':'Regal'} <b>${r.nummer}</b>`;
@@ -384,10 +394,10 @@ function shelfSvg(r,hl,opts={}){
   const W=Math.max(30,r.breite||100),H=Math.max(30,r.hoehe||200);
   const F=Math.max(1,r.faecher||1),N=Math.max(1,r.reihen||1);
   const m=14; const vw=W+m*2,vh=H+m*2;
-  const cw=W/N,ch=H/F;
+  const ch=H/F;
   let s=`<svg viewBox="0 0 ${vw} ${vh}" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:${opts.maxH||320}px;display:block" font-family="Helvetica,Arial,sans-serif">`;
   s+=`<rect x="${m}" y="${m}" width="${W}" height="${H}" fill="#fff" stroke="#1D1F1C" stroke-width="1.5"/>`;
-  for(let f=1;f<=F;f++)for(let n=1;n<=N;n++){
+  for(let f=1;f<=F;f++){const Nf=reihenIn(r,f),cw=W/Nf;for(let n=1;n<=Nf;n++){
     const x=m+(n-1)*cw,y=m+(f-1)*ch;const key=fachLetter(f)+n;
     const isHl=hl&&hl.fach===fachLetter(f)&&String(hl.reihe)===String(n);
     const cnt=opts.counts?opts.counts[key]||0:0;
@@ -401,10 +411,11 @@ function shelfSvg(r,hl,opts={}){
     if(cnt>1){const bw=cw*0.5,bh=Math.min(ch*0.12,4);for(let k=0;k<Math.min(cnt,5);k++)s+=`<rect x="${x+cw/2-bw/2}" y="${y+ch-3-(k+1)*(bh+1)}" width="${bw}" height="${bh}" fill="#0F5BE0" opacity=".55" pointer-events="none"/>`;}
     if(opts.showKeys)s+=`<text x="${x+cw/2}" y="${y+ch*0.4}" font-size="${fs}" text-anchor="middle" dominant-baseline="central" fill="${isHl?'#1D1F1C':'#5B5E58'}" pointer-events="none">${key}${cnt?` (${cnt})`:''}</text>`;
     if(isHl&&!opts.showKeys)s+=`<text x="${x+cw/2}" y="${y+ch/2}" font-size="${fs}" font-weight="700" text-anchor="middle" dominant-baseline="central" fill="#1D1F1C">${key}</text>`;
-  }
+  }}
   const lf=Math.min(m*0.75,ch*0.5);
   for(let f=1;f<=F;f++)s+=`<text x="${m-3}" y="${m+(f-0.5)*ch}" font-size="${lf}" text-anchor="end" dominant-baseline="central" fill="#5B5E58">${fachLetter(f)}</text>`;
-  for(let n=1;n<=N;n++)s+=`<text x="${m+(n-0.5)*cw}" y="${m+H+lf*1.1}" font-size="${lf}" text-anchor="middle" fill="#5B5E58">${n}</text>`;
+  const uniform=Array.from({length:F},(_,i)=>reihenIn(r,i+1)).every(n=>n===N);
+  if(uniform)for(let n=1;n<=N;n++)s+=`<text x="${m+(n-0.5)*(W/N)}" y="${m+H+lf*1.1}" font-size="${lf}" text-anchor="middle" fill="#5B5E58">${n}</text>`;
   if(opts.title)s+=`<text x="${m}" y="${m-4}" font-size="${lf}" fill="#1D1F1C">${esc(opts.title)}</text>`;
   return s+'</svg>';
 }
@@ -418,7 +429,7 @@ function shelfCard(o,label){
 /* ============ Lagerort-Auswahl (Formularbaustein) ============ */
 function locSelectHtml(p,cur){
   cur=cur||{};
-  return `<div class="field"><label>Lager</label><select id="${p}-lager">${DB.lager.map(l=>`<option value="${l.id}" ${l.id===cur.lagerId?'selected':''}>${esc(l.name)}</option>`).join('')}</select></div>
+  return `<div class="field"><label>Lager</label><select id="${p}-lager"><option value="" ${!cur.lagerId?'selected':''}>– Wareneingang (noch nicht einsortiert) –</option>${DB.lager.map(l=>`<option value="${l.id}" ${l.id===cur.lagerId?'selected':''}>${esc(l.name)}</option>`).join('')}</select></div>
     <div class="row">
       <div class="field"><label>Regal / Organiser</label><select id="${p}-regal"></select></div>
       <div class="field"><label id="${p}-lfach">Fach</label><select id="${p}-fach"></select></div>
@@ -435,11 +446,12 @@ function locWire(p,cur,onChange){
   const refreshFR=()=>{const r=regalById(R.value);const tl=typLabels(r);$('#'+p+'-lfach').textContent=tl.fach;$('#'+p+'-lreihe').textContent=tl.reihe;$('#'+p+'-lstapel').textContent=isOrg(r)?'Unterfach':'Stapel';$('#'+p+'-hstapel').textContent=isOrg(r)?'Unterfach: wenn die Schublade innen unterteilt ist (1 = links/vorn). Leer lassen, wenn egal.':'Stapel: Position im Fach, wenn mehrere Boxen übereinander stehen (1 = unten).';
     if(!r){fill(F,[{v:'',t:'–'}],'');fill(N,[{v:'',t:'–'}],'');}
     else{fill(F,[{v:'',t:'–'},...Array.from({length:r.faecher},(_,i)=>({v:fachLetter(i+1),t:fachLetter(i+1)}))],F.value||cur.fach);
-         fill(N,[{v:'',t:'–'},...Array.from({length:r.reihen},(_,i)=>({v:i+1,t:i+1}))],N.value||cur.reihe);}
+         const nf=reihenIn(r,fachIndex(F.value)||1);
+         fill(N,[{v:'',t:'–'},...Array.from({length:nf},(_,i)=>({v:i+1,t:i+1}))],N.value||cur.reihe);}
     onChange&&onChange();};
   L.onchange=()=>{R.value='';F.value='';N.value='';refreshRegal();};
   R.onchange=()=>{F.value='';N.value='';refreshFR();};
-  F.onchange=()=>onChange&&onChange();N.onchange=()=>onChange&&onChange();$('#'+p+'-stapel').onchange=()=>onChange&&onChange();
+  F.onchange=()=>{N.value='';refreshFR();};N.onchange=()=>onChange&&onChange();$('#'+p+'-stapel').onchange=()=>onChange&&onChange();
   refreshRegal();
 }
 function locRead(p){return {lagerId:$('#'+p+'-lager').value,regalId:$('#'+p+'-regal').value,fach:$('#'+p+'-fach').value,reihe:$('#'+p+'-reihe').value,stapel:$('#'+p+'-stapel').value};}
@@ -483,10 +495,10 @@ function fuzzyQuery(q,n=8){
 
 /* ============ Navigation ============ */
 let current='search', history=[], currentArg=null;
-const titles={search:'Suche',boxes:'Boxen',lager:'Lager',scan:'Scannen',more:'Mehr',part:'Teil',box:'Box',lagerdetail:'Lager',regal:'Regal',labels:'Etiketten'};
+const titles={search:'Suche',boxes:'Boxen',lager:'Lager',scan:'Scannen',more:'Mehr',part:'Teil',box:'Box',lagerdetail:'Lager',regal:'Regal',labels:'Etiketten',eingang:'Wareneingang',nachbestellen:'Nachbestellen'};
 function show(view,arg,push=true){
   if(current==='scan') stopScan();
-  if(push&&['part','box','lagerdetail','regal','labels'].includes(view)) history.push({view:current,arg:currentArg});
+  if(push&&['part','box','lagerdetail','regal','labels','eingang','nachbestellen'].includes(view)) history.push({view:current,arg:currentArg});
   if(['search','boxes','lager','scan','more'].includes(view)) history=[];
   current=view; currentArg=arg;
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
@@ -496,7 +508,7 @@ function show(view,arg,push=true){
   $('#pageTitle').textContent=titles[view]||'';
   const ha=$('#headAction');ha.style.display='none';ha.onclick=null;
   window.scrollTo(0,0);
-  ({search:renderSearch,boxes:renderBoxes,lager:renderLager,scan:renderScan,more:renderMore,part:renderPart,box:renderBox,lagerdetail:renderLagerDetail,regal:renderRegal,labels:renderLabels})[view](arg);
+  ({search:renderSearch,boxes:renderBoxes,lager:renderLager,scan:renderScan,more:renderMore,part:renderPart,box:renderBox,lagerdetail:renderLagerDetail,regal:renderRegal,labels:renderLabels,eingang:renderEingang,nachbestellen:renderNachbestellen})[view](arg);
 }
 $('#backBtn').onclick=()=>{const h=history.pop();if(h)show(h.view,h.arg,false);else show('search');};
 document.querySelectorAll('nav.tabs button').forEach(b=>b.onclick=()=>show(b.dataset.tab));
@@ -518,6 +530,10 @@ function partItem(t,extra=''){
     <div class="chev">›</div></button>`;
 }
 function renderSearch(){
+  const E=eingangList(),nE=E.teile.length+E.boxen.length,nM=unterMin().length;
+  $('#banner').innerHTML=(nE?`<button class="pill" style="background:var(--tape);font-weight:600" onclick="show('eingang')">Wareneingang: ${nE} einsortieren</button>`:'')+
+    (nM?`<button class="pill" style="background:#F8DDD7;color:var(--red);font-weight:600" onclick="show('nachbestellen')">Nachbestellen: ${nM}</button>`:'')+
+    `<button class="pill" onclick="partForm(null,{eingang:true})">+ Wareneingang</button>`;
   const f=$('#filters');
   f.innerHTML=`<span class="pill ${activeLagerFilter===''?'on':''}" onclick="activeLagerFilter='';renderSearch()">Alle Lager</span>`+
     DB.lager.map(l=>`<span class="pill ${activeLagerFilter===l.id?'on':''}" onclick="activeLagerFilter='${l.id}';renderSearch()">${esc(l.name)}</span>`).join('')+
@@ -559,13 +575,12 @@ function renderBoxes(){
   const groups={};DB.boxen.forEach(b=>{(groups[b.lagerId]??=[]).push(b);});
   el.innerHTML=Object.keys(groups).map(lid=>{
     const l=lagerById(lid);
-    return `<div class="section"><h2>${esc(l?l.name:'Ohne Lager')}<span class="small muted">${groups[lid].length}</span></h2><div class="list">${
+    return `<div class="section"><h2>${esc(l?l.name:'Wareneingang')}<span class="small muted">${groups[lid].length}</span></h2><div class="list">${
       groups[lid].sort((a,b)=>a.code.localeCompare(b.code,undefined,{numeric:true})).map(boxItem).join('')}</div></div>`;
   }).join('');
 }
 function boxForm(box,preset){
-  if(!DB.lager.length){toast('Zuerst ein Lager anlegen');show('lager');return;}
-  const isNew=!box; box=box||Object.assign({id:uid(),code:'',name:'',kategorie:'',lagerId:DB.lager[0]?.id||'',regalId:'',fach:'',reihe:'',stapel:''},preset||{});
+  const isNew=!box; box=box||Object.assign({id:uid(),code:'',name:'',kategorie:'',lagerId:'',regalId:'',fach:'',reihe:'',stapel:''},preset||{});
   openSheet(`<h2 style="margin-bottom:12px">${isNew?'Neue Box':'Box bearbeiten'}</h2><div class="stack">
     ${locSelectHtml('bx',box)}
     <div class="field"><label>Code <span class="muted" id="codePrev"></span></label><input id="f-code" value="${esc(box.code)}" placeholder="automatisch" autocapitalize="characters"></div>
@@ -656,6 +671,56 @@ function renderLagerDetail(id){
     ${looseParts.length?`<div class="section"><h2>Teile ohne Regal/Organiser</h2><div class="list">${looseParts.map(t=>partItem(t)).join('')}</div></div>`:''}`;
 }
 
+/* ============ Wareneingang ============ */
+function renderEingang(){
+  headAction('+ Teil',()=>partForm(null,{eingang:true}));
+  const E=eingangList();
+  $('#v-eingang').innerHTML=`<p class="small muted">Alles, was angekommen ist und noch keinen Platz hat. Anhaken und gemeinsam einsortieren, oder einzeln öffnen.</p>
+    <div class="row" style="margin:10px 0"><button class="btn quiet" onclick="partForm(null,{eingang:true})">+ Teil</button><button class="btn quiet" onclick="boxForm(null,{lagerId:''})">+ Box</button></div>
+    ${E.teile.length+E.boxen.length?`<div style="margin-bottom:6px"><span class="pill" onclick="egSel(true)">Alle</span><span class="pill" onclick="egSel(false)">Keine</span></div>
+    <div class="list">${E.boxen.map(b=>`<label class="item" style="cursor:pointer"><input type="checkbox" class="egBox" value="${b.id}" style="width:22px;height:22px;flex:none;accent-color:var(--blue)"><div class="thumb" style="background:var(--tape);font-weight:700;font-size:13px">${esc(b.code)}</div><div class="body"><div class="title">${esc(b.name||'Box')}</div><div class="sub">Box · ${DB.teile.filter(t=>t.boxId===b.id).length} Teile</div></div><button class="btn quiet sm" onclick="event.preventDefault();show('box','${b.id}')">Öffnen</button></label>`).join('')}
+    ${E.teile.map(t=>`<label class="item" style="cursor:pointer"><input type="checkbox" class="egTeil" value="${t.id}" style="width:22px;height:22px;flex:none;accent-color:var(--blue)"><div class="thumb">${t.foto?`<img src="${t.foto}" alt="">`:'▢'}</div><div class="body"><div class="title">${esc(t.name)}${t.menge?` <span class="muted small">× ${esc(t.menge)}</span>`:''}</div><div class="sub">${esc(t.kategorie||'')}${t.geaendert?' · '+new Date(t.geaendert).toLocaleDateString('de-DE'):''}</div></div><button class="btn quiet sm" onclick="event.preventDefault();show('part','${t.id}')">Öffnen</button></label>`).join('')}</div>
+    <button class="btn full" style="margin-top:12px" id="egAssign" disabled>Ausgewählte einsortieren</button>`
+    :`<div class="empty"><b>Wareneingang ist leer</b>Neue Lieferung? Über „+ Teil“ schnell erfassen, Platz später vergeben.</div>`}`;
+  const upd=()=>{const n=document.querySelectorAll('.egBox:checked,.egTeil:checked').length;const b=$('#egAssign');if(b){b.disabled=!n;b.textContent=n?`${n} ausgewählte einsortieren`:'Ausgewählte einsortieren';}};
+  document.querySelectorAll('.egBox,.egTeil').forEach(c=>c.addEventListener('change',upd));
+  window._egUpd=upd;
+  if($('#egAssign'))$('#egAssign').onclick=()=>assignSheet([...document.querySelectorAll('.egTeil:checked')].map(c=>c.value),[...document.querySelectorAll('.egBox:checked')].map(c=>c.value));
+}
+function egSel(on){document.querySelectorAll('.egBox,.egTeil').forEach(c=>c.checked=on);window._egUpd&&window._egUpd();}
+function assignSheet(teilIds,boxIds){
+  if(!DB.lager.length){toast('Zuerst ein Lager anlegen');return;}
+  let mode=boxIds.length?'regal':'box';
+  const first=DB.lager[0].id;
+  openSheet(`<h2 style="margin-bottom:12px">${teilIds.length} Teile${boxIds.length?', '+boxIds.length+' Boxen':''} einsortieren</h2><div class="stack">
+    ${boxIds.length?'':`<div><span class="pill ${mode==='box'?'on':''}" id="as-box">In eine Box</span><span class="pill ${mode==='regal'?'on':''}" id="as-regal">Regal / Organiser</span></div>`}
+    <div id="as-locbox" style="${mode==='box'?'':'display:none'}"><div class="field"><label>Box</label><select id="as-boxsel">${DB.boxen.map(b=>`<option value="${b.id}">${esc(b.code)} ${esc(b.name||'')} – ${esc(locText(b))}</option>`).join('')}</select></div></div>
+    <div id="as-locregal" style="${mode==='regal'?'':'display:none'}">${locSelectHtml('as',{lagerId:first})}</div>
+    <button class="btn full" id="as-save">Einsortieren</button></div>`);
+  locWire('as',{lagerId:first});
+  const setMode=m=>{mode=m;$('#as-box')?.classList.toggle('on',m==='box');$('#as-regal')?.classList.toggle('on',m==='regal');$('#as-locbox').style.display=m==='box'?'':'none';$('#as-locregal').style.display=m==='regal'?'':'none';};
+  if($('#as-box')){$('#as-box').onclick=()=>setMode('box');$('#as-regal').onclick=()=>setMode('regal');}
+  $('#as-save').onclick=async()=>{
+    if(mode==='box'){const bid=$('#as-boxsel').value;if(!bid){toast('Keine Box gewählt');return;}
+      teilIds.forEach(id=>{const t=teilById(id);if(t)Object.assign(t,{boxId:bid,lagerId:'',regalId:'',fach:'',reihe:'',stapel:'',geaendert:now()});});}
+    else{const loc=locRead('as');if(!loc.lagerId){toast('Lager wählen');return;}
+      teilIds.forEach(id=>{const t=teilById(id);if(t)Object.assign(t,{boxId:''},loc,{geaendert:now()});});
+      boxIds.forEach(id=>{const b=boxById(id);if(b){Object.assign(b,loc,{geaendert:now()});b.code=autoCode(loc,b.id);}});}
+    await persist();closeSheet();toast('Einsortiert');renderEingang();
+  };
+}
+function renderNachbestellen(){
+  const list=unterMin();
+  $('#v-nachbestellen').innerHTML=`<p class="small muted">Teile, deren Bestand unter dem eingetragenen Mindestbestand liegt.</p>
+    ${list.length?`<div class="list" style="margin-top:8px">${list.map(t=>`<button class="item" onclick="show('part','${t.id}')"><div class="thumb">${t.foto?`<img src="${t.foto}" alt="">`:'▢'}</div><div class="body"><div class="title">${esc(t.name)}</div><div class="sub"><b style="color:var(--red)">${esc(t.menge||0)}</b> von min. ${esc(t.min)} · ${esc(locText(t))}${t.quelle?' · Quelle hinterlegt':''}</div></div><div class="chev">›</div></button>`).join('')}</div>
+    <button class="btn quiet full" style="margin-top:12px" onclick="copyNachbestellen()">Liste kopieren</button>`
+    :'<div class="empty"><b>Nichts nachzubestellen</b>Trag bei Teilen einen Mindestbestand ein, dann erscheinen sie hier, sobald es knapp wird.</div>'}`;
+}
+async function copyNachbestellen(){
+  const txt=unterMin().map(t=>`${t.name}: ${t.menge||0}/${t.min}${t.quelle?' – '+t.quelle:''}`).join('\n');
+  try{await navigator.clipboard.writeText(txt);toast('Liste kopiert');}catch{prompt('Kopieren:',txt);}
+}
+
 /* ============ Regal ============ */
 function cellCounts(r){
   const c={};
@@ -680,15 +745,21 @@ function regalForm(r,lagerId,typ){
       <div class="field"><label>Tiefe cm</label><input id="f-tiefe" type="number" inputmode="decimal" value="${r.tiefe}"></div></div>
     <div class="row"><div class="field"><label>${org?'Schubladen-Zeilen (A–…)':'Fächer (Ebenen, A–…)'}</label><input id="f-faecher" type="number" inputmode="numeric" min="1" max="26" value="${r.faecher}"></div>
       <div class="field"><label>${org?'Schubladen pro Zeile':'Reihen (Plätze pro Fach)'}</label><input id="f-reihen" type="number" inputmode="numeric" min="1" value="${r.reihen}"></div></div>
+    <div class="field"><label>${org?'Abweichende Schubladenzahl je Zeile':'Abweichende Reihenzahl je Fach'} <span class="muted">(leer = wie oben, 1 = eine große Fläche)</span></label><div id="zeilenBox" class="row" style="flex-wrap:wrap;gap:6px"></div></div>
     <div id="regalPrev" class="card" style="background:var(--paper-2)"></div>
     <div class="field"><label>Notiz</label><textarea id="f-notiz">${esc(r.notiz||'')}</textarea></div>
     <button class="btn full" id="f-save">${isNew?'Regal anlegen':'Speichern'}</button>
     ${isNew?'':`<button class="btn danger full" id="f-del">Regal löschen</button>`}</div>`);
   $('#typ-regal').onclick=()=>{if(isNew){closeSheet();regalForm(null,$('#f-lager').value,'regal');}};
   $('#typ-org').onclick=()=>{if(isNew){closeSheet();regalForm(null,$('#f-lager').value,'organiser');}};
-  const read=()=>({typ:r.typ||'regal',lagerId:$('#f-lager').value,nummer:parseInt($('#f-nummer').value)||1,name:$('#f-name').value.trim(),breite:parseFloat($('#f-breite').value)||100,hoehe:parseFloat($('#f-hoehe').value)||200,tiefe:parseFloat($('#f-tiefe').value)||0,faecher:Math.min(26,Math.max(1,parseInt($('#f-faecher').value)||1)),reihen:Math.max(1,parseInt($('#f-reihen').value)||1),notiz:$('#f-notiz').value.trim()});
+  const readZeilen=()=>[...document.querySelectorAll('#zeilenBox input')].map(i=>i.value===''?null:Math.max(1,parseInt(i.value)||1));
+  const read=()=>({typ:r.typ||'regal',lagerId:$('#f-lager').value,nummer:parseInt($('#f-nummer').value)||1,name:$('#f-name').value.trim(),breite:parseFloat($('#f-breite').value)||100,hoehe:parseFloat($('#f-hoehe').value)||200,tiefe:parseFloat($('#f-tiefe').value)||0,faecher:Math.min(26,Math.max(1,parseInt($('#f-faecher').value)||1)),reihen:Math.max(1,parseInt($('#f-reihen').value)||1),zeilen:readZeilen(),notiz:$('#f-notiz').value.trim()});
   const prev=()=>{$('#regalPrev').innerHTML=shelfSvg(Object.assign({},r,read()),null,{showKeys:true,maxH:200});};
-  ['f-breite','f-hoehe','f-faecher','f-reihen'].forEach(i=>$('#'+i).addEventListener('input',prev));prev();
+  const buildZeilen=()=>{const F=Math.min(26,Math.max(1,parseInt($('#f-faecher').value)||1));const cur=readZeilen();
+    $('#zeilenBox').innerHTML=Array.from({length:F},(_,i)=>`<label style="flex:0 0 auto;display:flex;align-items:center;gap:4px;font-size:14px"><b>${fachLetter(i+1)}</b><input type="number" inputmode="numeric" min="1" value="${(cur[i]??(r.zeilen&&r.zeilen[i]))??''}" placeholder="${$('#f-reihen').value}" style="width:52px;padding:6px;border:1px solid var(--line);border-radius:6px;background:#fff"></label>`).join('');
+    document.querySelectorAll('#zeilenBox input').forEach(i=>i.addEventListener('input',prev));prev();};
+  ['f-breite','f-hoehe','f-reihen'].forEach(i=>$('#'+i).addEventListener('input',prev));
+  $('#f-faecher').addEventListener('input',buildZeilen);buildZeilen();
   $('#f-save').onclick=async()=>{
     const v=read();
     if(DB.regale.some(x=>x.id!==r.id&&x.lagerId===v.lagerId&&(x.typ||'regal')===v.typ&&x.nummer===v.nummer)){toast('Nummer in diesem Lager schon vergeben');return;}
@@ -724,9 +795,9 @@ function renderRegal(id){
   };
   $('#v-regal').innerHTML=`<div class="card"><div class="small muted">${esc(l?l.name:'')}${r.name?' · '+esc(r.name):''} · ${r.breite}×${r.hoehe}×${r.tiefe} cm${r.notiz?' · '+esc(r.notiz):''}</div>
     <div id="regalSvg" style="margin-top:8px"></div>
-    <p class="small muted" style="margin-top:6px">${isOrg(r)?`Schubladen A1–${fachLetter(r.faecher)}${r.reihen}, Zeilen von oben nach unten, Spalten von links nach rechts.`:`Fächer A–${fachLetter(r.faecher)} von oben nach unten, Reihen 1–${r.reihen} von links nach rechts.`} Blau = belegt.</p></div>
+    <p class="small muted" style="margin-top:6px">${isOrg(r)?`Schubladen-Zeilen A–${fachLetter(r.faecher)} von oben nach unten, Spalten von links nach rechts.`:`Fächer A–${fachLetter(r.faecher)} von oben nach unten, Reihen von links nach rechts.`} Blau = belegt.</p></div>
     <div class="section" id="cellContent"></div>`;
-  if(regalSel&&(fachIndex(regalSel.fach)>r.faecher||parseInt(regalSel.reihe)>r.reihen))regalSel=null;
+  if(regalSel&&(fachIndex(regalSel.fach)>r.faecher||parseInt(regalSel.reihe)>reihenIn(r,fachIndex(regalSel.fach))))regalSel=null;
   draw();
 }
 
@@ -741,8 +812,10 @@ function readImage(file){
 }
 function partForm(t,preset){
   const isNew=!t; preset=preset||{};
-  t=t||{id:uid(),name:'',kategorie:'',tags:[],menge:'',notiz:'',boxId:preset.boxId||'',lagerId:preset.lagerId||DB.lager[0]?.id||'',regalId:preset.regalId||'',fach:preset.fach||'',reihe:preset.reihe||'',stapel:preset.stapel||'',foto:''};
-  let foto=t.foto; let mode=t.boxId?'box':'regal';
+  t=t||{id:uid(),name:'',kategorie:'',tags:[],menge:'',min:'',quelle:'',notiz:'',boxId:preset.boxId||'',lagerId:preset.lagerId||'',regalId:preset.regalId||'',fach:preset.fach||'',reihe:preset.reihe||'',stapel:preset.stapel||'',foto:''};
+  let foto=t.foto; let mode=t.boxId?'box':(locOf(t)?'regal':'eingang');
+  if(preset.lagerId||preset.regalId)mode='regal';
+  if(isNew&&!preset.eingang&&!preset.boxId&&!preset.lagerId&&!preset.regalId&&DB.lager.length){mode='regal';t.lagerId=DB.lager[0].id;}
   openSheet(`<h2 style="margin-bottom:12px">${isNew?'Neues Teil':'Teil bearbeiten'}</h2><div class="stack">
     <div id="f-fotoprev">${foto?`<img class="hero-photo" src="${foto}">`:'<div class="photo-empty">Kein Foto</div>'}</div>
     <div class="row">
@@ -755,7 +828,9 @@ function partForm(t,preset){
     <div class="row"><div class="field"><label>Kategorie</label>${katSelectHtml('f-kat',t.kategorie)}</div>
       <div class="field"><label>Menge</label><input id="f-menge" inputmode="numeric" value="${esc(t.menge)}"></div></div>
     <div class="field"><label>Tags (Komma-getrennt)</label><input id="f-tags" value="${esc((t.tags||[]).join(', '))}" placeholder="wifi, 3.3V, usb-c"></div>
-    <div><span class="small muted">Lagerung</span><br><span class="pill ${mode==='box'?'on':''}" id="m-box">In einer Box</span><span class="pill ${mode==='regal'?'on':''}" id="m-regal">Direkt im Regal</span></div>
+    <div class="row"><div class="field"><label>Mindestbestand <span class="muted">(leer = keiner)</span></label><input id="f-min" inputmode="numeric" value="${esc(t.min??'')}"></div>
+      <div class="field" style="flex:2"><label>Bezugsquelle / Link</label><input id="f-quelle" value="${esc(t.quelle||'')}" placeholder="Shop-Link oder Lieferant"></div></div>
+    <div><span class="small muted">Lagerung</span><br><span class="pill ${mode==='box'?'on':''}" id="m-box">In einer Box</span><span class="pill ${mode==='regal'?'on':''}" id="m-regal">Regal / Organiser</span><span class="pill ${mode==='eingang'?'on':''}" id="m-eingang">Wareneingang</span></div>
     <div id="loc-box" style="${mode==='box'?'':'display:none'}"><div class="field"><label>Box</label><select id="f-box"><option value="">– wählen –</option>${DB.boxen.map(b=>`<option value="${b.id}" ${b.id===t.boxId?'selected':''}>${esc(b.code)} ${esc(b.name||'')}</option>`).join('')}</select></div></div>
     <div id="loc-regal" style="${mode==='regal'?'':'display:none'}">${locSelectHtml('pt',t)}</div>
     <div class="field"><label>Notiz</label><textarea id="f-notiz">${esc(t.notiz)}</textarea></div>
@@ -763,16 +838,16 @@ function partForm(t,preset){
     ${isNew?'':`<button class="btn danger full" id="f-del">Teil löschen</button>`}</div>`);
   katWire('f-kat');
   if(DB.lager.length)locWire('pt',t);
-  const setMode=m=>{mode=m;$('#m-box').classList.toggle('on',m==='box');$('#m-regal').classList.toggle('on',m==='regal');$('#loc-box').style.display=m==='box'?'':'none';$('#loc-regal').style.display=m==='regal'?'':'none';};
-  $('#m-box').onclick=()=>setMode('box');$('#m-regal').onclick=()=>setMode('regal');
+  const setMode=m=>{mode=m;['box','regal','eingang'].forEach(k=>$('#m-'+k).classList.toggle('on',m===k));$('#loc-box').style.display=m==='box'?'':'none';$('#loc-regal').style.display=m==='regal'?'':'none';};
+  $('#m-box').onclick=()=>setMode('box');$('#m-regal').onclick=()=>{setMode('regal');const L=$('#pt-lager');if(L&&!L.value&&DB.lager.length){L.value=DB.lager[0].id;L.onchange();}};$('#m-eingang').onclick=()=>setMode('eingang');
   const onFile=async e=>{const f=e.target.files[0];if(!f)return;try{foto=await readImage(f);$('#f-fotoprev').innerHTML=`<img class="hero-photo" src="${foto}">`;}catch{toast('Bild konnte nicht gelesen werden');}};
   $('#f-cam').onchange=onFile;$('#f-lib').onchange=onFile;
   $('#f-save').onclick=async()=>{
     const name=$('#f-name').value.trim();if(!name){toast('Name fehlt');return;}
     const kat=$('#f-kat').value==='__neu'?'':$('#f-kat').value;
     let loc={boxId:'',lagerId:'',regalId:'',fach:'',reihe:'',stapel:''};
-    if(mode==='box')loc.boxId=$('#f-box').value; else if(DB.lager.length)Object.assign(loc,locRead('pt'));
-    Object.assign(t,loc,{name,kategorie:kat,tags:$('#f-tags').value.split(',').map(s=>s.trim()).filter(Boolean),menge:$('#f-menge').value.trim(),notiz:$('#f-notiz').value.trim(),foto,geaendert:now()});
+    if(mode==='box')loc.boxId=$('#f-box').value; else if(mode==='regal'&&DB.lager.length)Object.assign(loc,locRead('pt'));
+    Object.assign(t,loc,{name,kategorie:kat,min:$('#f-min').value.trim(),quelle:$('#f-quelle').value.trim(),tags:$('#f-tags').value.split(',').map(s=>s.trim()).filter(Boolean),menge:$('#f-menge').value.trim(),notiz:$('#f-notiz').value.trim(),foto,geaendert:now()});
     if(isNew)DB.teile.push(t);
     const ok=await persist();closeSheet();if(ok)toast(isNew?'Teil angelegt':'Gespeichert');show('part',t.id,isNew);
   };
@@ -786,8 +861,9 @@ function renderPart(id){
     ${t.foto?`<img class="hero-photo" src="${t.foto}" alt="">`:'<div class="photo-empty">Kein Foto</div>'}
     <h1 style="margin-top:14px">${esc(t.name)}</h1>
     <p class="muted">${esc(t.kategorie||'')}</p>
-    <div class="card" style="margin-top:12px">
-      <div class="small muted" style="margin-bottom:6px">Bestand</div>
+    ${t.quelle?`<p class="small" style="margin-top:4px">${/^https?:\/\//i.test(t.quelle)?`<a href="${esc(t.quelle)}" target="_blank" rel="noopener" style="color:var(--blue)">Bezugsquelle öffnen ↗</a>`:'Bezugsquelle: '+esc(t.quelle)}</p>`:''}
+    <div class="card" style="margin-top:12px${unterMin().some(x=>x.id===t.id)?';border-color:var(--red)':''}">
+      <div class="small muted" style="margin-bottom:6px">Bestand${t.min!==''&&t.min!==undefined?` · Mindestbestand ${esc(t.min)}`:''}${unterMin().some(x=>x.id===t.id)?' <b style="color:var(--red)">· unter Minimum</b>':''}</div>
       <div class="row">
         <button class="btn quiet" style="font-size:20px" onclick="changeMenge('${t.id}',-1)">−1</button>
         <div class="mono" style="text-align:center;font-size:30px;font-weight:700;flex:1.3" id="mengeVal">${esc(t.menge||0)}</div>
@@ -799,6 +875,7 @@ function renderPart(id){
         <button class="btn quiet" onclick="changeMenge('${t.id}',parseInt(document.getElementById('mengeStep').value||0))">+</button>
       </div>
     </div>
+    ${verlaufHtml(t)}
     <div style="margin-top:8px">${(t.tags||[]).map(x=>`<span class="pill">${esc(x)}</span>`).join('')}</div>
     <div class="card" style="margin-top:12px">
       <div class="small muted" style="margin-bottom:4px">Lagerort</div>
@@ -816,11 +893,24 @@ function renderPart(id){
     </div>`;
   $('#aiBtn').onclick=()=>aiSuggest(t);
 }
+function verlaufHtml(t){
+  const v=(t.verlauf||[]).slice().reverse();
+  const fmt=ts=>{const d=new Date(ts);return d.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'})+' '+d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});};
+  const ent=v.filter(x=>x.delta<0).reduce((a,x)=>a-x.delta,0),zu=v.filter(x=>x.delta>0).reduce((a,x)=>a+x.delta,0);
+  const days={};v.forEach(x=>{const k=new Date(x.ts).toLocaleDateString('de-DE');(days[k]??=[]).push(x);});
+  return `<details id="verlaufBox" class="card" style="margin-top:12px;padding:0"><summary style="padding:12px 14px;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span><b>Verlauf</b> <span class="small muted">${v.length} Buchungen · ${ent} entnommen · ${zu} zugebucht</span></span><span class="muted">▾</span></summary>
+    <div style="padding:0 14px 12px">${v.length?Object.entries(days).map(([d,list])=>`<div class="small muted" style="margin-top:8px">${d}</div>`+list.map(x=>`<div class="row" style="padding:5px 0;border-bottom:1px solid var(--line)"><span class="small muted" style="flex:0 0 52px">${fmt(x.ts).slice(-5)}</span><span class="mono" style="font-weight:700;color:${x.delta<0?'var(--red)':'var(--blue)'}">${x.delta>0?'+':''}${x.delta}</span><span class="small muted" style="text-align:right">Bestand ${x.menge}</span></div>`).join('')).join('')
+      :'<p class="small muted" style="margin-top:8px">Noch keine Buchungen. Jede Änderung über −/+ wird hier mit Datum und Uhrzeit festgehalten.</p>'}
+      ${v.length?`<button class="btn quiet sm" style="margin-top:10px" onclick="clearVerlauf('${t.id}')">Verlauf leeren</button>`:''}</div></details>`;
+}
+async function clearVerlauf(id){const t=teilById(id);if(!t||!confirm('Verlauf dieses Teils löschen?'))return;t.verlauf=[];await persist();show('part',id,false);}
 async function changeMenge(id,delta){
   const t=teilById(id);if(!t||!delta)return;
   const cur=parseInt(t.menge)||0;const neu=Math.max(0,cur+delta);
   t.menge=String(neu);t.geaendert=now();
+  (t.verlauf??=[]).push({ts:now(),delta:neu-cur,menge:neu});if(t.verlauf.length>300)t.verlauf=t.verlauf.slice(-300);
   const el=document.getElementById('mengeVal');if(el)el.textContent=neu;
+  const vl=document.getElementById('verlaufBox');if(vl)vl.outerHTML=verlaufHtml(t);
   const st=document.getElementById('mengeStep');if(st)st.value='';
   await persist();toast(`${delta>0?'+':''}${delta} → ${neu} Stück`);
 }
@@ -928,7 +1018,7 @@ function stopScan(){
 
 
 /* ============ Etiketten ============ */
-function labelOrt(b){return locText(b).replace(/^ohne Lagerort$/,'');}
+function labelOrt(b){return locText(b).replace(/^Wareneingang$/,'');}
 function labelHtml(b,e,forPrint){
   const l=lagerById(b.lagerId);
   const ort=labelOrt(b);
@@ -1070,7 +1160,8 @@ async function allLabelImages(ids){
 /* ============ Mehr ============ */
 function renderMore(){
   $('#stats').textContent=`${DB.lager.length} Lager · ${DB.regale.length} Regale · ${DB.boxen.length} Boxen · ${DB.teile.length} Teile · ${DB.teile.filter(t=>t.foto).length} mit Foto`;
-  $('#storageInfo').textContent=`Speicher: ${store.mode==='artifact'?'Claude-Artefakt (dein Konto)':'lokal in diesem Browser'} · ${Math.round(JSON.stringify(DB).length/1024)} KB`;
+  const le=DB.meta?.lastExport;const tage=le?Math.floor((now()-le)/86400000):null;
+  $('#storageInfo').innerHTML=`Speicher: ${store.mode==='artifact'?'Claude-Artefakt (dein Konto)':'lokal in diesem Browser'} · ${Math.round(JSON.stringify(DB).length/1024)} KB<br>Letzte Sicherung: ${le?(tage===0?'heute':'vor '+tage+' Tagen'):'<b style="color:var(--red)">noch nie</b>'}${tage>=14?' <b style="color:var(--red)">– bitte exportieren</b>':''}`;
   renderKats();
 }
 function renderKats(){
@@ -1100,6 +1191,7 @@ $('#katAdd').onclick=addKat;$('#katNew').onkeydown=e=>{if(e.key==='Enter')addKat
 $('#exportBtn').onclick=()=>{
   const blob=new Blob([JSON.stringify(DB,null,1)],{type:'application/json'});const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);a.download='lager-export-'+new Date().toISOString().slice(0,10)+'.json';a.click();
+  (DB.meta??={}).lastExport=now();persist().then(renderMore);
 };
 $('#importFile').onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
@@ -1137,6 +1229,8 @@ $('#demoBtn').onclick=async()=>{
   // Teile direkt im Regal, ohne Box
   [['Isopropanol 5 l Kanister','Chemie/Flüssig',['ipa','reiniger'],'1',R1,'E',1],['Aceton 1 l','Chemie/Flüssig',['loesemittel'],'2',R1,'E',2],['PLA-Spule Schwarz','',['filament','1.75mm'],'4',R2,'D',1]]
     .forEach(([name,kategorie,tags,menge,r,fach,reihe])=>{if(!DB.teile.some(t=>t.name===name))DB.teile.push({id:uid(),name,kategorie,tags,menge,notiz:'',boxId:'',lagerId:r.lagerId,regalId:r.id,fach,reihe:String(reihe),foto:'',geaendert:now()});});
+  [['Lieferung: 10x ESP32-S3 Zero','Mikrocontroller','10'],['LiPo 1000 mAh','','4']].forEach(([name,kategorie,menge])=>{if(!DB.teile.some(t=>t.name===name))DB.teile.push({id:uid(),name,kategorie,tags:[],menge,min:'',quelle:'',notiz:'',boxId:'',lagerId:'',regalId:'',fach:'',reihe:'',stapel:'',foto:'',geaendert:now()});});
+  const m3=DB.teile.find(t=>t.name==='M3x8 Zylinderkopf');if(m3){m3.min='500';m3.quelle='https://www.schraubenhandel.example';}
   await persist();toast('Beispieldaten geladen');show('search');
 };
 
