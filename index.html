@@ -302,9 +302,9 @@ function migrate(){
       }
       delete b.regal;
     }
-    if(b.kategorie===undefined)b.kategorie='';
+    if(b.kategorie===undefined)b.kategorie='';if(b.platz===undefined)b.platz='';
   });
-  DB.teile.forEach(t=>{if(t.lagerId===undefined)t.lagerId='';if(t.regalId===undefined)t.regalId='';if(t.fach===undefined)t.fach='';if(t.reihe===undefined)t.reihe='';
+  DB.teile.forEach(t=>{if(t.platz===undefined)t.platz='';if(t.lagerId===undefined)t.lagerId='';if(t.regalId===undefined)t.regalId='';if(t.fach===undefined)t.fach='';if(t.reihe===undefined)t.reihe='';
     if(t.kategorie&&!DB.kategorien.includes(t.kategorie))DB.kategorien.push(t.kategorie);});
 }
 
@@ -335,13 +335,13 @@ function locOf(o){
   if(o.boxId!==undefined&&o.boxId){const b=boxById(o.boxId);return b?locOf(b):null;}
   if(!o.lagerId&&!o.regalId)return null;
   const r=regalById(o.regalId);
-  return {lagerId:o.lagerId||r?.lagerId||'',regalId:o.regalId||'',fach:o.fach||'',reihe:o.reihe||'',stapel:o.stapel||''};
+  return {lagerId:o.lagerId||r?.lagerId||'',regalId:o.regalId||'',fach:o.fach||'',reihe:o.reihe||'',stapel:o.stapel||'',platz:o.platz||''};
 }
 function locText(o){
   const L=locOf(o);if(!L)return 'Wareneingang';
   const l=lagerById(L.lagerId),r=regalById(L.regalId);
   const p=[l?l.name:'?'];
-  if(r)p.push((isOrg(r)?'Organiser ':'Regal ')+r.nummer);
+  if(r)p.push((isOrg(r)?'Organiser ':'Regal ')+r.nummer); else p.push(L.platz?'lose: '+L.platz:'lose im Lager');
   if(isOrg(r)){if(L.fach||L.reihe)p.push('Schublade '+(L.fach||'?')+(L.reihe||'?'));}
   else{if(L.fach)p.push('Fach '+L.fach);if(L.reihe)p.push('Reihe '+L.reihe);}
   if(L.stapel)p.push((isOrg(r)?'Unterfach ':'Stapel ')+L.stapel);
@@ -351,7 +351,7 @@ function locHtml(o){
   const L=locOf(o);if(!L)return '<span class="loc" style="color:var(--red)">Wareneingang – noch nicht einsortiert</span>';
   const l=lagerById(L.lagerId),r=regalById(L.regalId);
   let s=`<span class="loc"><b>${esc(l?l.name:'?')}</b>`;
-  if(r)s+=` · ${isOrg(r)?'Organiser':'Regal'} <b>${r.nummer}</b>`;
+  if(r)s+=` · ${isOrg(r)?'Organiser':'Regal'} <b>${r.nummer}</b>`; else s+=` · lose${L.platz?': <b>'+esc(L.platz)+'</b>':' im Lager'}`;
   if(isOrg(r)){if(L.fach||L.reihe)s+=` · Schublade <b>${esc(L.fach)}${esc(L.reihe)}</b>`;}
   else{if(L.fach)s+=` · Fach <b>${esc(L.fach)}</b>`;if(L.reihe)s+=` · Reihe <b>${esc(L.reihe)}</b>`;}
   if(L.stapel)s+=` · ${isOrg(r)?'Unterfach':'Stapel'} <b>${esc(L.stapel)}</b>`;
@@ -436,14 +436,17 @@ function locSelectHtml(p,cur){
       <div class="field"><label id="${p}-lreihe">Reihe</label><select id="${p}-reihe"></select></div>
       <div class="field"><label id="${p}-lstapel">Stapel</label><select id="${p}-stapel">${['','1','2','3','4','5','6','7','8'].map(v=>`<option value="${v}" ${String(v)===String(cur.stapel||'')?'selected':''}>${v||'–'}</option>`).join('')}</select></div>
     </div>
-    <p class="small muted" style="margin-top:-4px" id="${p}-hstapel">Stapel: Position im Fach, wenn mehrere Boxen übereinander stehen (1 = unten).</p>`;
+    <p class="small muted" style="margin-top:-4px" id="${p}-hstapel">Stapel: Position im Fach, wenn mehrere Boxen übereinander stehen (1 = unten).</p>
+    <div class="field" id="${p}-platzbox"><label>Wo im Lager? <span class="muted">(lose, ohne Regal)</span></label><input id="${p}-platz" value="${esc(cur.platz||'')}" placeholder="z. B. unter der Werkbank, Ecke links"></div>`;
 }
 function locWire(p,cur,onChange){
   cur=cur||{};
   const L=$('#'+p+'-lager'),R=$('#'+p+'-regal'),F=$('#'+p+'-fach'),N=$('#'+p+'-reihe');
   const fill=(sel,opts,val)=>{sel.innerHTML=opts.map(o=>`<option value="${o.v}" ${String(o.v)===String(val)?'selected':''}>${o.t}</option>`).join('');};
-  const refreshRegal=()=>{const rs=regaleOf(L.value);fill(R,[{v:'',t:'– keins –'},...rs.map(r=>({v:r.id,t:regalLabel(r)}))],R.value||cur.regalId);refreshFR();};
-  const refreshFR=()=>{const r=regalById(R.value);const tl=typLabels(r);$('#'+p+'-lfach').textContent=tl.fach;$('#'+p+'-lreihe').textContent=tl.reihe;$('#'+p+'-lstapel').textContent=isOrg(r)?'Unterfach':'Stapel';$('#'+p+'-hstapel').textContent=isOrg(r)?'Unterfach: wenn die Schublade innen unterteilt ist (1 = links/vorn). Leer lassen, wenn egal.':'Stapel: Position im Fach, wenn mehrere Boxen übereinander stehen (1 = unten).';
+  const refreshRegal=()=>{const rs=regaleOf(L.value);fill(R,[{v:'',t:L.value?'– lose im Lager (kein Regal) –':'–'},...rs.map(r=>({v:r.id,t:regalLabel(r)}))],R.value||cur.regalId);refreshFR();};
+  const refreshFR=()=>{const r=regalById(R.value);const tl=typLabels(r);
+    const loose=!!L.value&&!R.value;$('#'+p+'-platzbox').style.display=loose?'':'none';
+    [F,N,$('#'+p+'-stapel')].forEach(x=>x.parentElement.style.opacity=(!L.value||loose)?'.45':'1');$('#'+p+'-lfach').textContent=tl.fach;$('#'+p+'-lreihe').textContent=tl.reihe;$('#'+p+'-lstapel').textContent=isOrg(r)?'Unterfach':'Stapel';$('#'+p+'-hstapel').textContent=isOrg(r)?'Unterfach: wenn die Schublade innen unterteilt ist (1 = links/vorn). Leer lassen, wenn egal.':'Stapel: Position im Fach, wenn mehrere Boxen übereinander stehen (1 = unten).';
     if(!r){fill(F,[{v:'',t:'–'}],'');fill(N,[{v:'',t:'–'}],'');}
     else{fill(F,[{v:'',t:'–'},...Array.from({length:r.faecher},(_,i)=>({v:fachLetter(i+1),t:fachLetter(i+1)}))],F.value||cur.fach);
          const nf=reihenIn(r,fachIndex(F.value)||1);
@@ -454,7 +457,7 @@ function locWire(p,cur,onChange){
   F.onchange=()=>{N.value='';refreshFR();};N.onchange=()=>onChange&&onChange();$('#'+p+'-stapel').onchange=()=>onChange&&onChange();
   refreshRegal();
 }
-function locRead(p){return {lagerId:$('#'+p+'-lager').value,regalId:$('#'+p+'-regal').value,fach:$('#'+p+'-fach').value,reihe:$('#'+p+'-reihe').value,stapel:$('#'+p+'-stapel').value};}
+function locRead(p){const regalId=$('#'+p+'-regal').value;return {lagerId:$('#'+p+'-lager').value,regalId,fach:regalId?$('#'+p+'-fach').value:'',reihe:regalId?$('#'+p+'-reihe').value:'',stapel:regalId?$('#'+p+'-stapel').value:'',platz:regalId?'':$('#'+p+'-platz').value.trim()};}
 
 /* ============ Kategorien ============ */
 function katSelectHtml(id,cur){
@@ -663,12 +666,13 @@ function renderLagerDetail(id){
   const looseParts=DB.teile.filter(t=>!t.boxId&&t.lagerId===l.id&&!t.regalId);
   $('#v-lagerdetail').innerHTML=`${l.ort||l.notiz?`<div class="card">${esc(l.ort)}${l.notiz?`<p class="small muted" style="margin-top:6px">${esc(l.notiz)}</p>`:''}</div>`:''}
     <div class="row" style="margin:12px 0"><button class="btn full" onclick="regalForm(null,'${l.id}','regal')">+ Regal</button><button class="btn full" onclick="regalForm(null,'${l.id}','organiser')">+ Organiser</button><button class="btn quiet full" onclick="boxForm(null,{lagerId:'${l.id}'})">+ Box</button></div>
+    <div class="row" style="margin:-6px 0 12px"><button class="btn quiet full" onclick="partForm(null,{lagerId:'${l.id}'})">+ Teil lose im Lager</button></div>
     ${[['Regale',rs.filter(r=>!isOrg(r)),'Noch kein Regal. Regale haben Fächer (A, B, C …) und Reihen (1, 2, 3 …).'],['Schiebe-Organiser',rs.filter(isOrg),'']].map(([titel,list,leer])=>list.length||leer?`<div class="section"><h2>${titel} <span class="small muted">${list.length}</span></h2>
     ${list.length?`<div class="regal-grid">${list.map(r=>{const counts=cellCounts(r);const total=Object.values(counts).reduce((a,b)=>a+b,0);const tl=typLabels(r);
       return `<button class="card regal-tile" onclick="show('regal','${r.id}')"><div class="title">${esc(regalLabel(r))}</div><div class="small muted">${r.breite}×${r.hoehe} cm · ${r.faecher} × ${r.reihen} ${tl.zelle==='Schublade'?'Schubladen':'Fächer/Reihen'} · ${total} Objekte</div>${shelfSvg(r,null,{counts,maxH:150})}</button>`;}).join('')}</div>`
       :`<div class="empty">${leer}</div>`}</div>`:'').join('')}
-    ${loose.length?`<div class="section"><h2>Boxen ohne Regal/Organiser</h2><div class="list">${loose.map(boxItem).join('')}</div></div>`:''}
-    ${looseParts.length?`<div class="section"><h2>Teile ohne Regal/Organiser</h2><div class="list">${looseParts.map(t=>partItem(t)).join('')}</div></div>`:''}`;
+    ${loose.length?`<div class="section"><h2>Boxen lose im Lager <span class="small muted">${loose.length}</span></h2><div class="list">${loose.map(boxItem).join('')}</div></div>`:''}
+    ${looseParts.length?`<div class="section"><h2>Teile lose im Lager <span class="small muted">${looseParts.length}</span></h2><div class="list">${looseParts.map(t=>partItem(t)).join('')}</div></div>`:''}`;
 }
 
 /* ============ Wareneingang ============ */
@@ -693,7 +697,7 @@ function assignSheet(teilIds,boxIds){
   let mode=boxIds.length?'regal':'box';
   const first=DB.lager[0].id;
   openSheet(`<h2 style="margin-bottom:12px">${teilIds.length} Teile${boxIds.length?', '+boxIds.length+' Boxen':''} einsortieren</h2><div class="stack">
-    ${boxIds.length?'':`<div><span class="pill ${mode==='box'?'on':''}" id="as-box">In eine Box</span><span class="pill ${mode==='regal'?'on':''}" id="as-regal">Regal / Organiser</span></div>`}
+    ${boxIds.length?'':`<div><span class="pill ${mode==='box'?'on':''}" id="as-box">In eine Box</span><span class="pill ${mode==='regal'?'on':''}" id="as-regal">Im Lager</span></div>`}
     <div id="as-locbox" style="${mode==='box'?'':'display:none'}"><div class="field"><label>Box</label><select id="as-boxsel">${DB.boxen.map(b=>`<option value="${b.id}">${esc(b.code)} ${esc(b.name||'')} – ${esc(locText(b))}</option>`).join('')}</select></div></div>
     <div id="as-locregal" style="${mode==='regal'?'':'display:none'}">${locSelectHtml('as',{lagerId:first})}</div>
     <button class="btn full" id="as-save">Einsortieren</button></div>`);
@@ -702,7 +706,7 @@ function assignSheet(teilIds,boxIds){
   if($('#as-box')){$('#as-box').onclick=()=>setMode('box');$('#as-regal').onclick=()=>setMode('regal');}
   $('#as-save').onclick=async()=>{
     if(mode==='box'){const bid=$('#as-boxsel').value;if(!bid){toast('Keine Box gewählt');return;}
-      teilIds.forEach(id=>{const t=teilById(id);if(t)Object.assign(t,{boxId:bid,lagerId:'',regalId:'',fach:'',reihe:'',stapel:'',geaendert:now()});});}
+      teilIds.forEach(id=>{const t=teilById(id);if(t)Object.assign(t,{boxId:bid,lagerId:'',regalId:'',fach:'',reihe:'',stapel:'',platz:'',geaendert:now()});});}
     else{const loc=locRead('as');if(!loc.lagerId){toast('Lager wählen');return;}
       teilIds.forEach(id=>{const t=teilById(id);if(t)Object.assign(t,{boxId:''},loc,{geaendert:now()});});
       boxIds.forEach(id=>{const b=boxById(id);if(b){Object.assign(b,loc,{geaendert:now()});b.code=autoCode(loc,b.id);}});}
@@ -830,7 +834,7 @@ function partForm(t,preset){
     <div class="field"><label>Tags (Komma-getrennt)</label><input id="f-tags" value="${esc((t.tags||[]).join(', '))}" placeholder="wifi, 3.3V, usb-c"></div>
     <div class="row"><div class="field"><label>Mindestbestand <span class="muted">(leer = keiner)</span></label><input id="f-min" inputmode="numeric" value="${esc(t.min??'')}"></div>
       <div class="field" style="flex:2"><label>Bezugsquelle / Link</label><input id="f-quelle" value="${esc(t.quelle||'')}" placeholder="Shop-Link oder Lieferant"></div></div>
-    <div><span class="small muted">Lagerung</span><br><span class="pill ${mode==='box'?'on':''}" id="m-box">In einer Box</span><span class="pill ${mode==='regal'?'on':''}" id="m-regal">Regal / Organiser</span><span class="pill ${mode==='eingang'?'on':''}" id="m-eingang">Wareneingang</span></div>
+    <div><span class="small muted">Lagerung</span><br><span class="pill ${mode==='box'?'on':''}" id="m-box">In einer Box</span><span class="pill ${mode==='regal'?'on':''}" id="m-regal">Im Lager (Regal, Organiser, lose)</span><span class="pill ${mode==='eingang'?'on':''}" id="m-eingang">Wareneingang</span></div>
     <div id="loc-box" style="${mode==='box'?'':'display:none'}"><div class="field"><label>Box</label><select id="f-box"><option value="">– wählen –</option>${DB.boxen.map(b=>`<option value="${b.id}" ${b.id===t.boxId?'selected':''}>${esc(b.code)} ${esc(b.name||'')}</option>`).join('')}</select></div></div>
     <div id="loc-regal" style="${mode==='regal'?'':'display:none'}">${locSelectHtml('pt',t)}</div>
     <div class="field"><label>Notiz</label><textarea id="f-notiz">${esc(t.notiz)}</textarea></div>
@@ -845,7 +849,7 @@ function partForm(t,preset){
   $('#f-save').onclick=async()=>{
     const name=$('#f-name').value.trim();if(!name){toast('Name fehlt');return;}
     const kat=$('#f-kat').value==='__neu'?'':$('#f-kat').value;
-    let loc={boxId:'',lagerId:'',regalId:'',fach:'',reihe:'',stapel:''};
+    let loc={boxId:'',lagerId:'',regalId:'',fach:'',reihe:'',stapel:'',platz:''};
     if(mode==='box')loc.boxId=$('#f-box').value; else if(mode==='regal'&&DB.lager.length)Object.assign(loc,locRead('pt'));
     Object.assign(t,loc,{name,kategorie:kat,min:$('#f-min').value.trim(),quelle:$('#f-quelle').value.trim(),tags:$('#f-tags').value.split(',').map(s=>s.trim()).filter(Boolean),menge:$('#f-menge').value.trim(),notiz:$('#f-notiz').value.trim(),foto,geaendert:now()});
     if(isNew)DB.teile.push(t);
@@ -881,7 +885,7 @@ function renderPart(id){
       <div class="small muted" style="margin-bottom:4px">Lagerort</div>
       ${box?`<div class="row" style="align-items:center"><div><span class="tag" style="font-size:16px">${esc(box.code)}</span> <b>${esc(box.name||'')}</b><div style="margin-top:4px">${locHtml(t)}</div></div>
         <button class="btn quiet sm" style="flex:0 0 auto" onclick="show('box','${box.id}')">Box öffnen</button></div>`
-        :locOf(t)?`<div>${locHtml(t)} <span class="small muted">(direkt im Regal, ohne Box)</span></div>`
+        :locOf(t)?`<div>${locHtml(t)} <span class="small muted">(ohne Box)</span></div>`
         :`<div class="row"><span class="muted">Kein Lagerort</span><button class="btn quiet sm" style="flex:0 0 auto" onclick="partForm(teilById('${t.id}'))">Zuordnen</button></div>`}
     </div>
     ${shelfCard(t)}
