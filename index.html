@@ -238,6 +238,7 @@
   <section class="view" id="v-nachbestellen"></section>
   <!-- WARENEINGANG -->
   <section class="view" id="v-eingang"></section>
+  <section class="view" id="v-unterwegs"></section>
   <!-- DETAIL: Regal -->
   <section class="view" id="v-regal"></section>
   <!-- Druckbogen -->
@@ -304,7 +305,7 @@ function migrate(){
     }
     if(b.kategorie===undefined)b.kategorie='';if(b.platz===undefined)b.platz='';
   });
-  DB.teile.forEach(t=>{if(t.platz===undefined)t.platz='';if(t.lagerId===undefined)t.lagerId='';if(t.regalId===undefined)t.regalId='';if(t.fach===undefined)t.fach='';if(t.reihe===undefined)t.reihe='';
+  DB.teile.forEach(t=>{if(t.entnommen===undefined)t.entnommen=null;if(t.platz===undefined)t.platz='';if(t.lagerId===undefined)t.lagerId='';if(t.regalId===undefined)t.regalId='';if(t.fach===undefined)t.fach='';if(t.reihe===undefined)t.reihe='';
     if(t.kategorie&&!DB.kategorien.includes(t.kategorie))DB.kategorien.push(t.kategorie);});
 }
 
@@ -322,6 +323,7 @@ const fachIndex=l=>l?l.toUpperCase().charCodeAt(0)-64:0; // A → 1
 const isOrg=r=>r&&r.typ==='organiser';
 const inEingang=o=>!locOf(o);
 const eingangList=()=>({teile:DB.teile.filter(inEingang),boxen:DB.boxen.filter(b=>!b.lagerId&&!b.regalId)});
+const entnommenList=()=>DB.teile.filter(t=>t.entnommen).sort((a,b)=>(b.entnommen.ts||0)-(a.entnommen.ts||0));
 const unterMin=()=>DB.teile.filter(t=>t.min!==''&&t.min!==undefined&&parseInt(t.min)>=0&&(parseInt(t.menge)||0)<parseInt(t.min)).sort((a,b)=>a.name.localeCompare(b.name));
 const regaleOf=lid=>DB.regale.filter(r=>r.lagerId===lid).sort((a,b)=>(isOrg(a)-isOrg(b))||(a.nummer-b.nummer));
 const regalLabel=r=>r?(isOrg(r)?'Organiser ':'Regal ')+r.nummer+(r.name?' '+r.name:''):'';
@@ -498,10 +500,10 @@ function fuzzyQuery(q,n=8){
 
 /* ============ Navigation ============ */
 let current='search', history=[], currentArg=null;
-const titles={search:'Suche',boxes:'Boxen',lager:'Lager',scan:'Scannen',more:'Mehr',part:'Teil',box:'Box',lagerdetail:'Lager',regal:'Regal',labels:'Etiketten',eingang:'Wareneingang',nachbestellen:'Nachbestellen'};
+const titles={search:'Suche',boxes:'Boxen',lager:'Lager',scan:'Scannen',more:'Mehr',part:'Teil',box:'Box',lagerdetail:'Lager',regal:'Regal',labels:'Etiketten',eingang:'Wareneingang',nachbestellen:'Nachbestellen',unterwegs:'Unterwegs'};
 function show(view,arg,push=true){
   if(current==='scan') stopScan();
-  if(push&&['part','box','lagerdetail','regal','labels','eingang','nachbestellen'].includes(view)) history.push({view:current,arg:currentArg});
+  if(push&&['part','box','lagerdetail','regal','labels','eingang','nachbestellen','unterwegs'].includes(view)) history.push({view:current,arg:currentArg});
   if(['search','boxes','lager','scan','more'].includes(view)) history=[];
   current=view; currentArg=arg;
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
@@ -511,7 +513,7 @@ function show(view,arg,push=true){
   $('#pageTitle').textContent=titles[view]||'';
   const ha=$('#headAction');ha.style.display='none';ha.onclick=null;
   window.scrollTo(0,0);
-  ({search:renderSearch,boxes:renderBoxes,lager:renderLager,scan:renderScan,more:renderMore,part:renderPart,box:renderBox,lagerdetail:renderLagerDetail,regal:renderRegal,labels:renderLabels,eingang:renderEingang,nachbestellen:renderNachbestellen})[view](arg);
+  ({search:renderSearch,boxes:renderBoxes,lager:renderLager,scan:renderScan,more:renderMore,part:renderPart,box:renderBox,lagerdetail:renderLagerDetail,regal:renderRegal,labels:renderLabels,eingang:renderEingang,nachbestellen:renderNachbestellen,unterwegs:renderUnterwegs})[view](arg);
 }
 $('#backBtn').onclick=()=>{const h=history.pop();if(h)show(h.view,h.arg,false);else show('search');};
 document.querySelectorAll('nav.tabs button').forEach(b=>b.onclick=()=>show(b.dataset.tab));
@@ -528,13 +530,13 @@ function partItem(t,extra=''){
   const box=boxById(t.boxId);
   return `<button class="item" onclick="show('part','${t.id}')">
     <div class="thumb">${t.foto?`<img src="${t.foto}" alt="">`:'▢'}</div>
-    <div class="body"><div class="title">${esc(t.name)}${t.menge?` <span class="muted small">× ${esc(t.menge)}</span>`:''}</div>
+    <div class="body"><div class="title">${esc(t.name)}${t.menge?` <span class="muted small">× ${esc(t.menge)}</span>`:''}${t.entnommen?' <span class="pill" style="background:var(--tape);font-size:11px;padding:2px 7px">unterwegs</span>':''}</div>
       <div class="sub">${box?`<span class="tag">${esc(box.code)}</span> `:''}${esc(locText(t))}</div>${extra}</div>
     <div class="chev">›</div></button>`;
 }
 function renderSearch(){
-  const E=eingangList(),nE=E.teile.length+E.boxen.length,nM=unterMin().length;
-  $('#banner').innerHTML=(nE?`<button class="pill" style="background:var(--tape);font-weight:600" onclick="show('eingang')">Wareneingang: ${nE} einsortieren</button>`:'')+
+  const E=eingangList(),nE=E.teile.length+E.boxen.length,nM=unterMin().length,nU=entnommenList().length;
+  $('#banner').innerHTML=(nU?`<button class="pill" style="background:var(--tape);font-weight:600" onclick="show('unterwegs')">Unterwegs: ${nU}</button>`:'')+(nE?`<button class="pill" style="background:var(--tape);font-weight:600" onclick="show('eingang')">Wareneingang: ${nE} einsortieren</button>`:'')+
     (nM?`<button class="pill" style="background:#F8DDD7;color:var(--red);font-weight:600" onclick="show('nachbestellen')">Nachbestellen: ${nM}</button>`:'')+
     `<button class="pill" onclick="partForm(null,{eingang:true})">+ Wareneingang</button>`;
   const f=$('#filters');
@@ -852,6 +854,7 @@ function partForm(t,preset){
     let loc={boxId:'',lagerId:'',regalId:'',fach:'',reihe:'',stapel:'',platz:''};
     if(mode==='box')loc.boxId=$('#f-box').value; else if(mode==='regal'&&DB.lager.length)Object.assign(loc,locRead('pt'));
     Object.assign(t,loc,{name,kategorie:kat,min:$('#f-min').value.trim(),quelle:$('#f-quelle').value.trim(),tags:$('#f-tags').value.split(',').map(s=>s.trim()).filter(Boolean),menge:$('#f-menge').value.trim(),notiz:$('#f-notiz').value.trim(),foto,geaendert:now()});
+    if(t._rueck){delete t._rueck;t.entnommen=null;}
     if(isNew)DB.teile.push(t);
     const ok=await persist();closeSheet();if(ok)toast(isNew?'Teil angelegt':'Gespeichert');show('part',t.id,isNew);
   };
@@ -880,6 +883,12 @@ function renderPart(id){
       </div>
     </div>
     ${verlaufHtml(t)}
+    <div class="card" style="margin-top:12px${t.entnommen?';border-color:var(--tape);background:#FFF8E6':''}">
+      ${t.entnommen?`<div><b>Unterwegs</b> <span class="small muted">seit ${fmtTs(t.entnommen.ts)}${t.entnommen.grund?' · '+esc(t.entnommen.grund):''}</span></div>
+        <div class="small muted" style="margin:4px 0 8px">Platz bleibt reserviert. Beim Zurücklegen kann ein neuer Platz gewählt werden.</div>
+        <div class="row"><button class="btn full" onclick="zurueckLegen('${t.id}')">Zurücklegen</button><button class="btn quiet full" onclick="zurueckLegen('${t.id}',true)">An anderen Platz</button></div>`
+      :`<div class="row" style="align-items:center"><div class="small muted" style="flex:1">Teil vorübergehend rausnehmen (z. B. Filament für einen Druck)</div><button class="btn quiet sm" style="flex:0 0 auto" onclick="entnehmen('${t.id}')">Entnehmen</button></div>`}
+    </div>
     <div style="margin-top:8px">${(t.tags||[]).map(x=>`<span class="pill">${esc(x)}</span>`).join('')}</div>
     <div class="card" style="margin-top:12px">
       <div class="small muted" style="margin-bottom:4px">Lagerort</div>
@@ -908,6 +917,24 @@ function verlaufHtml(t){
       ${v.length?`<button class="btn quiet sm" style="margin-top:10px" onclick="clearVerlauf('${t.id}')">Verlauf leeren</button>`:''}</div></details>`;
 }
 async function clearVerlauf(id){const t=teilById(id);if(!t||!confirm('Verlauf dieses Teils löschen?'))return;t.verlauf=[];await persist();show('part',id,false);}
+function fmtTs(ts){const d=new Date(ts||0);return d.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});}
+async function entnehmen(id){
+  const t=teilById(id);if(!t)return;
+  const grund=prompt('Wofür entnommen? (optional)','')||'';
+  t.entnommen={ts:now(),grund:grund.trim()};t.geaendert=now();
+  await persist();renderPart(id);
+}
+async function zurueckLegen(id,neuerPlatz){
+  const t=teilById(id);if(!t)return;
+  if(neuerPlatz){t._rueck=true;partForm(t);return;}
+  t.entnommen=null;t.geaendert=now();await persist();renderPart(id);
+}
+function renderUnterwegs(){
+  const L=entnommenList();
+  $('#v-unterwegs').innerHTML=`<p class="small muted">Teile, die gerade rausgenommen sind. Platz bleibt reserviert, bis sie zurückgelegt werden.</p>
+    ${L.length?`<div class="list">${L.map(t=>partItem(t,`<div class="small muted">seit ${fmtTs(t.entnommen.ts)}${t.entnommen.grund?' · '+esc(t.entnommen.grund):''}</div>`)).join('')}</div>`
+    :'<div class="empty"><b>Nichts unterwegs</b>Alles liegt an seinem Platz.</div>'}`;
+}
 async function changeMenge(id,delta){
   const t=teilById(id);if(!t||!delta)return;
   const cur=parseInt(t.menge)||0;const neu=Math.max(0,cur+delta);
