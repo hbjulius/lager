@@ -321,7 +321,7 @@ const teilById=id=>DB.teile.find(t=>t.id===id);
 const fachLetter=i=>String.fromCharCode(64+i);          // 1 → A
 const fachIndex=l=>l?l.toUpperCase().charCodeAt(0)-64:0; // A → 1
 const isOrg=r=>r&&r.typ==='organiser';
-const inEingang=o=>!locOf(o);
+const inEingang=o=>!locOf(o)&&!o.entnommen;
 const eingangList=()=>({teile:DB.teile.filter(inEingang),boxen:DB.boxen.filter(b=>!b.lagerId&&!b.regalId)});
 const entnommenList=()=>DB.teile.filter(t=>t.entnommen).sort((a,b)=>(b.entnommen.ts||0)-(a.entnommen.ts||0));
 const unterMin=()=>DB.teile.filter(t=>t.min!==''&&t.min!==undefined&&parseInt(t.min)>=0&&(parseInt(t.menge)||0)<parseInt(t.min)).sort((a,b)=>a.name.localeCompare(b.name));
@@ -340,6 +340,7 @@ function locOf(o){
   return {lagerId:o.lagerId||r?.lagerId||'',regalId:o.regalId||'',fach:o.fach||'',reihe:o.reihe||'',stapel:o.stapel||'',platz:o.platz||''};
 }
 function locText(o){
+  if(o.entnommen)return 'Unterwegs (kein Platz)';
   const L=locOf(o);if(!L)return 'Wareneingang';
   const l=lagerById(L.lagerId),r=regalById(L.regalId);
   const p=[l?l.name:'?'];
@@ -350,6 +351,7 @@ function locText(o){
   return p.join(' · ');
 }
 function locHtml(o){
+  if(o.entnommen)return '<span class="loc" style="color:#8a6100">Unterwegs – kein Lagerplatz</span>';
   const L=locOf(o);if(!L)return '<span class="loc" style="color:var(--red)">Wareneingang – noch nicht einsortiert</span>';
   const l=lagerById(L.lagerId),r=regalById(L.regalId);
   let s=`<span class="loc"><b>${esc(l?l.name:'?')}</b>`;
@@ -885,9 +887,10 @@ function renderPart(id){
     ${verlaufHtml(t)}
     <div class="card" style="margin-top:12px${t.entnommen?';border-color:var(--tape);background:#FFF8E6':''}">
       ${t.entnommen?`<div><b>Unterwegs</b> <span class="small muted">seit ${fmtTs(t.entnommen.ts)}${t.entnommen.grund?' · '+esc(t.entnommen.grund):''}</span></div>
-        <div class="small muted" style="margin:4px 0 8px">Platz bleibt reserviert. Beim Zurücklegen kann ein neuer Platz gewählt werden.</div>
-        <div class="row"><button class="btn full" onclick="zurueckLegen('${t.id}')">Zurücklegen</button><button class="btn quiet full" onclick="zurueckLegen('${t.id}',true)">An anderen Platz</button></div>`
-      :`<div class="row" style="align-items:center"><div class="small muted" style="flex:1">Teil vorübergehend rausnehmen (z. B. Filament für einen Druck)</div><button class="btn quiet sm" style="flex:0 0 auto" onclick="entnehmen('${t.id}')">Entnehmen</button></div>`}
+        <div class="small muted" style="margin:4px 0 8px">Hat gerade keinen Lagerplatz.${vonText(t)?' Lag vorher: '+esc(vonText(t)):''}</div>
+        <div class="row"><button class="btn full" onclick="zurueckLegen('${t.id}',true)">Einsortieren</button>${t.entnommen.von?`<button class="btn quiet full" onclick="zurueckLegen('${t.id}')">Alter Platz</button>`:''}</div>
+        <button class="btn ghost full" style="margin-top:8px;color:var(--red)" onclick="aufgebraucht('${t.id}')">Aufgebraucht – Teil löschen</button>`
+      :`<div class="row" style="align-items:center"><div class="small muted" style="flex:1">Vorübergehend rausnehmen (z. B. Filament für einen Druck). Der Platz wird frei.</div><button class="btn quiet sm" style="flex:0 0 auto" onclick="entnehmen('${t.id}')">Entnehmen</button></div>`}
     </div>
     <div style="margin-top:8px">${(t.tags||[]).map(x=>`<span class="pill">${esc(x)}</span>`).join('')}</div>
     <div class="card" style="margin-top:12px">
@@ -895,6 +898,7 @@ function renderPart(id){
       ${box?`<div class="row" style="align-items:center"><div><span class="tag" style="font-size:16px">${esc(box.code)}</span> <b>${esc(box.name||'')}</b><div style="margin-top:4px">${locHtml(t)}</div></div>
         <button class="btn quiet sm" style="flex:0 0 auto" onclick="show('box','${box.id}')">Box öffnen</button></div>`
         :locOf(t)?`<div>${locHtml(t)} <span class="small muted">(ohne Box)</span></div>`
+        :t.entnommen?`<div>${locHtml(t)}</div>`
         :`<div class="row"><span class="muted">Kein Lagerort</span><button class="btn quiet sm" style="flex:0 0 auto" onclick="partForm(teilById('${t.id}'))">Zuordnen</button></div>`}
     </div>
     ${shelfCard(t)}
@@ -918,21 +922,33 @@ function verlaufHtml(t){
 }
 async function clearVerlauf(id){const t=teilById(id);if(!t||!confirm('Verlauf dieses Teils löschen?'))return;t.verlauf=[];await persist();show('part',id,false);}
 function fmtTs(ts){const d=new Date(ts||0);return d.toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});}
+const LOC_KEYS=['boxId','lagerId','regalId','fach','reihe','stapel','platz'];
+function vonText(t){const v=t.entnommen&&t.entnommen.von;if(!v)return '';const b=boxById(v.boxId);return b?('Box '+b.code+(locText(b)?' · '+locText(b):'')):locText(v);}
 async function entnehmen(id){
   const t=teilById(id);if(!t)return;
   const grund=prompt('Wofür entnommen? (optional)','')||'';
-  t.entnommen={ts:now(),grund:grund.trim()};t.geaendert=now();
+  const von={};LOC_KEYS.forEach(k=>von[k]=t[k]||'');
+  t.entnommen={ts:now(),grund:grund.trim(),von};
+  LOC_KEYS.forEach(k=>t[k]='');t.geaendert=now();
   await persist();renderPart(id);
 }
 async function zurueckLegen(id,neuerPlatz){
   const t=teilById(id);if(!t)return;
-  if(neuerPlatz){t._rueck=true;partForm(t);return;}
-  t.entnommen=null;t.geaendert=now();await persist();renderPart(id);
+  if(neuerPlatz||!t.entnommen.von){t._rueck=true;const v=t.entnommen.von||{};LOC_KEYS.forEach(k=>{if(!t[k]&&v[k])t[k]=v[k];});partForm(t);return;}
+  const v=t.entnommen.von;if(v.boxId&&!boxById(v.boxId)){toast('Alte Box gibt es nicht mehr');zurueckLegen(id,true);return;}
+  LOC_KEYS.forEach(k=>t[k]=v[k]||'');t.entnommen=null;t.geaendert=now();await persist();toast('Zurück auf '+locText(t));renderPart(id);
+}
+async function aufgebraucht(id){
+  const t=teilById(id);if(!t)return;
+  if(!confirm(`„${t.name}“ ist aufgebraucht und wird gelöscht?`))return;
+  DB.teile=DB.teile.filter(x=>x.id!==id);await persist();toast('Gelöscht');
+  if(current==='part')show('unterwegs');else renderUnterwegs();
 }
 function renderUnterwegs(){
   const L=entnommenList();
-  $('#v-unterwegs').innerHTML=`<p class="small muted">Teile, die gerade rausgenommen sind. Platz bleibt reserviert, bis sie zurückgelegt werden.</p>
-    ${L.length?`<div class="list">${L.map(t=>partItem(t,`<div class="small muted">seit ${fmtTs(t.entnommen.ts)}${t.entnommen.grund?' · '+esc(t.entnommen.grund):''}</div>`)).join('')}</div>`
+  $('#v-unterwegs').innerHTML=`<p class="small muted">Teile, die gerade rausgenommen sind und keinen Lagerplatz haben. Einsortieren gibt ihnen wieder einen Platz.</p>
+    ${L.length?`<div class="list">${L.map(t=>`<div style="border-bottom:1px solid var(--line)">${partItem(t,`<div class="small muted">seit ${fmtTs(t.entnommen.ts)}${t.entnommen.grund?' · '+esc(t.entnommen.grund):''}${vonText(t)?' · vorher '+esc(vonText(t)):''}</div>`)}
+      <div class="row" style="padding:0 12px 10px"><button class="btn sm full" onclick="zurueckLegen('${t.id}',true)">Einsortieren</button>${t.entnommen.von?`<button class="btn quiet sm full" onclick="zurueckLegen('${t.id}')">Alter Platz</button>`:''}<button class="btn quiet sm" style="flex:0 0 auto;color:var(--red)" onclick="aufgebraucht('${t.id}')">Leer</button></div></div>`).join('')}</div>`
     :'<div class="empty"><b>Nichts unterwegs</b>Alles liegt an seinem Platz.</div>'}`;
 }
 async function changeMenge(id,delta){
